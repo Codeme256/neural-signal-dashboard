@@ -1,15 +1,16 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useDerivMarkets, useDerivQuotes } from "@/hooks/use-deriv";
-import { derivQuoteStatus, formatMarketPrice, } from "@/lib/deriv-data";
+import { derivQuoteStatus, formatMarketPrice, type DerivMarket } from "@/lib/deriv-data";
 import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { ScanDialog } from "@/components/signal/SignalDialog";
+import { UserMenu } from "@/components/auth/UserMenu";
 
-export const Route = createFileRoute("/")({
+export const Route = createFileRoute("/_authenticated/")({
   head: () => ({
     meta: [
       { title: "TradePulse — Neural Signal Dashboard" },
-      { name: "description", content: "Scan any forex, gold or synthetic pair for entry, stop loss, take profit and signal strength." },
+      { name: "description", content: "Scan forex, index, crypto (BTCUSD), metal and synthetic pairs for entry, stop loss, take profit and signal strength." },
       { property: "og:title", content: "TradePulse — Neural Signal Dashboard" },
       { property: "og:description", content: "Live pair scanning with entry, SL, TP and strength." },
       { property: "og:type", content: "website" },
@@ -19,7 +20,14 @@ export const Route = createFileRoute("/")({
   component: Dashboard,
 });
 
-const categories = ["ALL", "FOREX", "METALS", "SYNTHETIC", "STOCK INDICES"];
+const categories = ["ALL", "FOREX", "INDEX", "CRYPTO", "METAL", "SYNTHETIC"];
+const groups = [
+  { id: "FOREX", icon: "€$", label: "Forex" },
+  { id: "INDEX", icon: "▤", label: "Index" },
+  { id: "CRYPTO", icon: "₿", label: "Crypto" },
+  { id: "METAL", icon: "◆", label: "Metal" },
+];
+type ScanTarget = { section: string; label: string; filter: (m: DerivMarket) => boolean; single?: boolean };
 
 function Dashboard() {
   const marketsQ = useDerivMarkets();
@@ -28,7 +36,9 @@ function Dashboard() {
   const quotes = useMemo(() => new Map((quotesQ.data ?? []).map((q) => [q.symbol, q])), [quotesQ.data]);
   const [cat, setCat] = useState("ALL");
   const [query, setQuery] = useState("");
-  const [scanning, setScanning] = useState(false);
+  const [scan, setScan] = useState<ScanTarget | null>(null);
+  const scanMarkets = useMemo(() => (scan ? markets.filter(scan.filter) : []), [scan, markets]);
+  const btc = markets.find((m) => m.symbol === "BTCUSD");
   const prices = useMemo(() => new Map((quotesQ.data ?? []).map((q) => [q.symbol, q.price])), [quotesQ.data]);
   const now = Date.now();
 
@@ -51,22 +61,57 @@ function Dashboard() {
               <p className="font-mono text-xs text-muted-foreground">NEURAL SIGNAL ENGINE</p>
             </div>
           </div>
-          <div className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-4 py-2 font-mono text-xs backdrop-blur">
-            <span className="live-dot" /> {live} LIVE / {markets.length} MARKETS
+          <div className="flex items-center gap-2">
+            <Link to="/analysis" className="chip">📊 ANALYSIS</Link>
+            <UserMenu />
+            <div className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-4 py-2 font-mono text-xs backdrop-blur">
+              <span className="live-dot" /> {live} LIVE / {markets.length} MARKETS
+            </div>
           </div>
         </header>
 
         <section className="mt-10 flex flex-col items-center">
-          <button onClick={() => setScanning(true)} disabled={!markets.length} className="scan-btn scan-main">
+          <button onClick={() => setScan({ section: "all", label: "all open markets", filter: () => true })} disabled={!markets.length} className="scan-btn scan-main">
             ⚡ SCAN ALL MARKETS
           </button>
           <p className="mt-3 font-mono text-xs text-muted-foreground">Finds every strong signal across open pairs</p>
+          <button
+            onClick={() => setScan({ section: "btcusd", label: "BTCUSD", filter: (m) => m.symbol === "BTCUSD", single: true })}
+            disabled={!btc}
+            className="scan-btn mt-6 px-8"
+          >
+            ₿ SCAN BTCUSD {btc ? `· ${formatMarketPrice(quotes.get("BTCUSD")?.price, btc)}` : ""}
+          </button>
+        </section>
+
+        <section className="mt-10 grid grid-cols-2 gap-4 lg:grid-cols-4">
+          {groups.map((g) => {
+            const inGroup = markets.filter((m) => m.category === g.id);
+            const open = inGroup.filter((m) => m.open).length;
+            return (
+              <div key={g.id} className="pair-card flex flex-col">
+                <div className="flex items-center justify-between">
+                  <span className="font-display text-2xl text-primary">{g.icon}</span>
+                  <span className="font-mono text-[10px] text-muted-foreground">{open}/{inGroup.length} OPEN</span>
+                </div>
+                <h3 className="mt-2 font-display text-lg font-bold uppercase">{g.label}</h3>
+                <p className="truncate font-mono text-[10px] text-muted-foreground">{inGroup.slice(0, 4).map((m) => m.symbol).join(" · ") || "—"}</p>
+                <button
+                  onClick={() => setScan({ section: g.id.toLowerCase(), label: `${g.label} pairs`, filter: (m) => m.category === g.id })}
+                  disabled={!inGroup.length}
+                  className="scan-btn mt-4 text-xs"
+                >
+                  SCAN {g.label.toUpperCase()}
+                </button>
+              </div>
+            );
+          })}
         </section>
 
         <section className="mt-10 grid gap-4 sm:grid-cols-3">
           <Stat label="Markets tracked" value={markets.length || "—"} />
           <Stat label="Live feeds" value={live || "—"} accent />
-          <Stat label="Engine" value="EMA · RSI · ATR" />
+          <Stat label="Engine" value="MTF · SMC · ATR" />
         </section>
 
         <section className="mt-8 flex flex-wrap items-center gap-2">
@@ -98,7 +143,16 @@ function Dashboard() {
                   <span className={`status status-${status.toLowerCase()}`}>{status}</span>
                 </div>
                 <div className="mt-4 font-mono text-2xl font-semibold">{q ? formatMarketPrice(q.price, m) : "—"}</div>
-                <div className="mt-1 font-mono text-[10px] tracking-widest text-muted-foreground">{m.category}</div>
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="font-mono text-[10px] tracking-widest text-muted-foreground">{m.category}</span>
+                  <button
+                    onClick={() => setScan({ section: "pair", label: m.symbol, filter: (x) => x.derivSymbol === m.derivSymbol, single: true })}
+                    aria-label={`Scan ${m.symbol}`}
+                    className="chip chip-sm"
+                  >
+                    SCAN
+                  </button>
+                </div>
 
               </article>
             );
@@ -106,7 +160,7 @@ function Dashboard() {
         </section>
       </main>
 
-      <ScanDialog open={scanning} markets={markets} prices={prices} onClose={() => setScanning(false)} />
+      <ScanDialog key={scan?.label} section={scan?.section ?? "all"} single={scan?.single} open={!!scan} label={scan?.label ?? "markets"} markets={scanMarkets} prices={prices} onClose={() => setScan(null)} />
     </div>
   );
 }
