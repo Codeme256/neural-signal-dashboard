@@ -150,3 +150,5 @@
 .scan-bar { width: 40%; background: linear-gradient(90deg, transparent, var(--primary), transparent); animation: scanbar 1.1s linear infinite; }
 @keyframes scanbar { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
 @keyframes pulse { 50% { opacity: .4; } }
+.scan-main { padding: 1.1rem 3rem; font-size: 1.15rem; border-radius: 999px; animation: glowpulse 2.4s ease-in-out infinite; }
+@keyframes glowpulse { 50% { box-shadow: 0 0 50px -4px var(--primary); } }

@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useDerivMarkets, useDerivQuotes } from "@/hooks/use-deriv";
-import { derivQuoteStatus, formatMarketPrice, type DerivMarket } from "@/lib/deriv-data";
+import { derivQuoteStatus, formatMarketPrice, } from "@/lib/deriv-data";
 import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
-import { SignalDialog } from "@/components/signal/SignalDialog";
+import { ScanDialog } from "@/components/signal/SignalDialog";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -28,7 +28,8 @@ function Dashboard() {
   const quotes = useMemo(() => new Map((quotesQ.data ?? []).map((q) => [q.symbol, q])), [quotesQ.data]);
   const [cat, setCat] = useState("ALL");
   const [query, setQuery] = useState("");
-  const [scan, setScan] = useState<DerivMarket | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const prices = useMemo(() => new Map((quotesQ.data ?? []).map((q) => [q.symbol, q.price])), [quotesQ.data]);
   const now = Date.now();
 
   const list = markets.filter(
@@ -54,6 +55,13 @@ function Dashboard() {
             <span className="live-dot" /> {live} LIVE / {markets.length} MARKETS
           </div>
         </header>
+
+        <section className="mt-10 flex flex-col items-center">
+          <button onClick={() => setScanning(true)} disabled={!markets.length} className="scan-btn scan-main">
+            ⚡ SCAN ALL MARKETS
+          </button>
+          <p className="mt-3 font-mono text-xs text-muted-foreground">Finds every strong signal across open pairs</p>
+        </section>
 
         <section className="mt-10 grid gap-4 sm:grid-cols-3">
           <Stat label="Markets tracked" value={markets.length || "—"} />
@@ -91,20 +99,14 @@ function Dashboard() {
                 </div>
                 <div className="mt-4 font-mono text-2xl font-semibold">{q ? formatMarketPrice(q.price, m) : "—"}</div>
                 <div className="mt-1 font-mono text-[10px] tracking-widest text-muted-foreground">{m.category}</div>
-                <button
-                  onClick={() => setScan(m)}
-                  disabled={!m.open}
-                  className="scan-btn mt-5 w-full"
-                >
-                  {m.open ? "⚡ SCAN" : "MARKET CLOSED"}
-                </button>
+
               </article>
             );
           })}
         </section>
       </main>
 
-      <SignalDialog market={scan} livePrice={scan ? quotes.get(scan.symbol)?.price : undefined} onClose={() => setScan(null)} />
+      <ScanDialog open={scanning} markets={markets} prices={prices} onClose={() => setScanning(false)} />
     </div>
   );
 }
