@@ -19,7 +19,7 @@ export const Route = createFileRoute("/")({
   component: Dashboard,
 });
 
-const categories = ["ALL", "FOREX", "METALS", "SYNTHETIC", "STOCK INDICES"];
+const categories = ["ALL", "FOREX", "METAL", "SYNTHETIC", "INDEX", "CRYPTO"];
 
 function Dashboard() {
   const marketsQ = useDerivMarkets();
@@ -66,7 +66,7 @@ function Dashboard() {
         <section className="mt-10 grid gap-4 sm:grid-cols-3">
           <Stat label="Markets tracked" value={markets.length || "—"} />
           <Stat label="Live feeds" value={live || "—"} accent />
-          <Stat label="Engine" value="EMA · RSI · ATR" />
+          <Stat label="Engine" value="MTF · SMC · ATR" />
         </section>
 
         <section className="mt-8 flex flex-wrap items-center gap-2">
