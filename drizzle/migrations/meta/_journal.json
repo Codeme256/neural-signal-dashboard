@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1794068750563,
+      "tag": "0000_profiles_and_tracked_signals",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794068750564,
+      "tag": "0001_private_avatars",
+      "breakpoints": true
+    }
+  ]
+}

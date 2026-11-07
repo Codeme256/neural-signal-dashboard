@@ -9,6 +9,9 @@ import {
   type ErrorComponentProps,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
+import { toast } from "sonner";
+import { Toaster } from "@/components/ui/sonner";
+import { supabase } from "@/integrations/supabase/client";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
@@ -97,7 +100,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
       { rel: "stylesheet", href: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;600;700&display=swap" },
-      { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      { rel: "icon", type: "image/png", href: "/favicon.png" },
     ],
   }),
   shellComponent: RootShell,
@@ -120,11 +123,39 @@ function RootShell({ children }: { children: ReactNode }) {
   );
 }
 
+/** React to authentication changes without requiring a page reload. */
+function AuthStateSync() {
+  const router = useRouter();
+  const { queryClient } = Route.useRouteContext();
+  useEffect(() => {
+    let active = true;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event !== "SIGNED_IN" && event !== "SIGNED_OUT" && event !== "USER_UPDATED") return;
+      // Supabase warns against awaiting API calls inside its synchronous auth callback.
+      queueMicrotask(() => {
+        if (!active) return;
+        if (event === "SIGNED_OUT") {
+          queryClient.clear();
+          toast.info("Signed out");
+        } else {
+          void queryClient.invalidateQueries({ queryKey: ["profile"] });
+          if (event === "SIGNED_IN") toast.success("Signed in");
+        }
+        void router.invalidate();
+      });
+    });
+    return () => { active = false; subscription.unsubscribe(); };
+  }, [queryClient, router]);
+  return null;
+}
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   return (
     <QueryClientProvider client={queryClient}>
+      <AuthStateSync />
+      <Toaster position="top-right" richColors closeButton />
       {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
       <Outlet />
     </QueryClientProvider>

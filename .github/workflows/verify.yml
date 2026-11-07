@@ -1,0 +1,19 @@
+name: Verify dashboard
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, feature/profile-auth-live-ui]
+permissions:
+  contents: read
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run test
+      - run: bun run build
