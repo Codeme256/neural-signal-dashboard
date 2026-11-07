@@ -28,7 +28,7 @@ function Dashboard() {
   const quotes = useMemo(() => new Map((quotesQ.data ?? []).map((q) => [q.symbol, q])), [quotesQ.data]);
   const [cat, setCat] = useState("ALL");
   const [query, setQuery] = useState("");
-  const [scanning, setScanning] = useState(false);
+  const [scanSymbol, setScanSymbol] = useState<string | null>(null);
   const prices = useMemo(() => new Map((quotesQ.data ?? []).map((q) => [q.symbol, q.price])), [quotesQ.data]);
   const now = Date.now();
 
@@ -57,7 +57,7 @@ function Dashboard() {
         </header>
 
         <section className="mt-10 flex flex-col items-center">
-          <button onClick={() => setScanning(true)} disabled={!markets.length} className="scan-btn scan-main">
+          <button onClick={() => setScanSymbol("ALL")} disabled={!markets.length} className="scan-btn scan-main">
             ⚡ SCAN ALL MARKETS
           </button>
           <p className="mt-3 font-mono text-xs text-muted-foreground">Finds every strong signal across open pairs</p>
@@ -98,7 +98,7 @@ function Dashboard() {
                   <span className={`status status-${status.toLowerCase()}`}>{status}</span>
                 </div>
                 <div className="mt-4 font-mono text-2xl font-semibold">{q ? formatMarketPrice(q.price, m) : "—"}</div>
-                <div className="mt-1 font-mono text-[10px] tracking-widest text-muted-foreground">{m.category}</div>
+                <div className="mt-1 flex items-center justify-between gap-2"><span className="font-mono text-[10px] tracking-widest text-muted-foreground">{m.category}</span><button className="chip chip-sm" onClick={() => setScanSymbol(m.derivSymbol)} aria-label={`Scan ${m.symbol}`}>SCAN</button></div>
 
               </article>
             );
@@ -106,7 +106,7 @@ function Dashboard() {
         </section>
       </main>
 
-      <ScanDialog open={scanning} markets={markets} prices={prices} onClose={() => setScanning(false)} />
+      <ScanDialog key={scanSymbol ?? "closed"} open={scanSymbol !== null} markets={scanSymbol === "ALL" ? markets : markets.filter(m => m.derivSymbol === scanSymbol)} prices={prices} onClose={() => setScanSymbol(null)} single={scanSymbol !== "ALL"} label={scanSymbol === "ALL" ? "all open markets" : scanSymbol ?? "markets"} section={scanSymbol === "ALL" ? "all" : "pair"} />
     </div>
   );
 }

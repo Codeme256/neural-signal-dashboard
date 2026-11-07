@@ -1,7 +1,9 @@
 import { EMA, RSI } from 'technicalindicators';
 import { z } from 'zod';
+import type { Ohlc } from './strategies/types';
 
 export const majorForex = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'];
+const metals = ['frxXAUUSD', 'frxXAGUSD', 'frxXPTUSD', 'frxXPDUSD'];
 const syntheticSymbols = ['R_10', 'R_25', 'R_50', 'R_75', 'R_100', '1HZ10V', '1HZ25V', '1HZ50V', '1HZ75V', '1HZ100V', 'BOOM500', 'BOOM1000', 'CRASH500', 'CRASH1000', 'stpRNG'];
 const number = z.number().finite().positive();
 const symbolSchema = z.object({ underlying_symbol: z.string(), underlying_symbol_name: z.string(), market: z.string(), pip_size: number, exchange_is_open: z.number(), is_trading_suspended: z.number() });
@@ -10,9 +12,9 @@ export type DerivQuote = { symbol: string; price: number; epoch: number; retriev
 export type Candle = { time: number; value: number };
 
 export function parseDerivMarkets(raw: unknown): DerivMarket[] {
-  return z.array(symbolSchema).parse(raw).filter(item => item.underlying_symbol === 'frxXAUUSD' || majorForex.some(pair => item.underlying_symbol === `frx${pair}`) || item.market === 'indices' || syntheticSymbols.includes(item.underlying_symbol)).map(item => {
-    const symbol = item.underlying_symbol.replace(/^frx/, '');
-    return { symbol, ticker: symbol, name: item.underlying_symbol_name, category: item.market === 'forex' ? 'FOREX' : item.market === 'commodities' ? 'METALS' : item.market === 'indices' ? 'STOCK INDICES' : 'SYNTHETIC', derivSymbol: item.underlying_symbol, decimals: Math.max(0, Math.round(-Math.log10(item.pip_size))), open: item.exchange_is_open === 1 && item.is_trading_suspended === 0, change: 0, volatility: 0, confidence: 0, bias: 'WAIT', horizon: '1H candles', note: '' };
+  return z.array(symbolSchema).parse(raw).filter(item => metals.includes(item.underlying_symbol) || item.market === 'cryptocurrency' || majorForex.some(pair => item.underlying_symbol === `frx${pair}`) || item.market === 'indices' || syntheticSymbols.includes(item.underlying_symbol)).map(item => {
+    const symbol = item.underlying_symbol.replace(/^(frx|cry)/, '');
+    return { symbol, ticker: symbol, name: item.underlying_symbol_name, category: item.market === 'forex' ? 'FOREX' : item.market === 'commodities' ? 'METAL' : item.market === 'indices' ? 'INDEX' : item.market === 'cryptocurrency' ? 'CRYPTO' : 'SYNTHETIC', derivSymbol: item.underlying_symbol, decimals: Math.max(0, Math.round(-Math.log10(item.pip_size))), open: item.exchange_is_open === 1 && item.is_trading_suspended === 0, change: 0, volatility: 0, confidence: 0, bias: 'WAIT', horizon: '1H candles', note: '' };
   }).sort((a, b) => (a.symbol === 'XAUUSD' ? -1 : b.symbol === 'XAUUSD' ? 1 : a.category.localeCompare(b.category) || a.name.localeCompare(b.name)));
 }
 
@@ -34,6 +36,23 @@ export function derivQuoteStatus(quote: DerivQuote | undefined, now: number): 'L
 
 export function parseDerivCandles(raw: unknown): Candle[] {
   return z.array(z.object({ epoch: number, close: number })).parse(raw).map(row => ({ time: row.epoch * 1000, value: row.close })).sort((a,b) => a.time-b.time);
+}
+
+const price = z.coerce.number().finite().positive();
+const ohlcRow = z.object({ epoch: number, open: price, high: price, low: price, close: price });
+
+/** Real Deriv OHLC candles (time = candle open, ms). Drops malformed rows and duplicates; never fills gaps. */
+export function parseDerivOhlc(raw: unknown): Ohlc[] {
+  const rows = z.array(z.unknown()).parse(raw);
+  const out = new Map<number, Ohlc>();
+  for (const row of rows) {
+    const r = ohlcRow.safeParse(row);
+    if (!r.success) continue;
+    const { epoch, open, high, low, close } = r.data;
+    if (high < Math.max(open, close) || low > Math.min(open, close)) continue;
+    out.set(epoch * 1000, { time: epoch * 1000, open, high, low, close });
+  }
+  return [...out.values()].sort((a, b) => a.time - b.time);
 }
 
 export function deriveSignal(points: Candle[], now: number, open: boolean) {
