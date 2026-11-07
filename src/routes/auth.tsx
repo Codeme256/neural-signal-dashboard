@@ -1,7 +1,6 @@
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable";
 import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { GoogleButton } from "@/components/auth/GoogleButton";
 import { toast } from "sonner";
@@ -70,11 +69,23 @@ function AuthPage() {
   };
 
   const google = async () => {
-    setBusy(true); setError(null);
-    const result = await lovable.auth.signInWithOAuth("google", { redirect_uri: window.location.origin });
-    if (result.error) { setError("Google sign-in didn't finish. Please try again."); toast.error("Google sign-in failed"); setBusy(false); return; }
-    if (result.redirected) return;
-    navigate({ to: "/", replace: true });
+    setBusy(true);
+    setError(null);
+    try {
+      // Use Supabase OAuth directly. Lovable's /~oauth/initiate route is not
+      // available on independent Cloudflare Workers deployments.
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo: `${window.location.origin}/` },
+      });
+      if (error) throw error;
+      // Supabase redirects the browser to Google on success.
+    } catch (err) {
+      const message = friendly(err);
+      setError(message);
+      toast.error(message);
+      setBusy(false);
+    }
   };
 
   const title = mode === "signin" ? "Welcome back" : mode === "signup" ? "Create your account" : "Reset password";
