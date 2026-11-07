@@ -44,7 +44,7 @@ export function NeuralCanvas({ intensity = 1, className }: { intensity?: number;
       }
       for (let i = 0; i < nodes.length; i++) {
         for (let j = i + 1; j < nodes.length; j++) {
-          const a = nodes[i], b = nodes[j];
+          const a = nodes[i]!, b = nodes[j]!;
           const d = Math.hypot(a.x - b.x, a.y - b.y);
           if (d < maxD) {
             ctx.globalAlpha = (1 - d / maxD) * 0.35;
@@ -60,7 +60,7 @@ export function NeuralCanvas({ intensity = 1, className }: { intensity?: number;
         ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2); ctx.fill();
       }
       for (let p = pulses.length - 1; p >= 0; p--) {
-        const s = pulses[p]; s.t += 0.02 * k;
+        const s = pulses[p]!; s.t += 0.02 * k;
         const a = nodes[s.a], b = nodes[s.b];
         if (s.t >= 1 || !a || !b) { pulses.splice(p, 1); continue; }
         ctx.fillStyle = pulse; ctx.shadowColor = pulse; ctx.shadowBlur = 14;

@@ -8,7 +8,7 @@ import { NeuralCanvas } from "./NeuralCanvas";
 
 const steps = ["Connecting to live feed", "Loading 100 hourly candles", "Running EMA 9 / 21 crossover", "Measuring RSI momentum", "Calculating volatility & levels"];
 
-export function SignalDialog({ market, livePrice, onClose }: { market: DerivMarket | null; livePrice?: number; onClose: () => void }) {
+export function SignalDialog({ market, livePrice, onClose }: { market: DerivMarket | null; livePrice?: number | undefined; onClose: () => void }) {
   const [step, setStep] = useState(0);
   const [signal, setSignal] = useState<Signal | null>(null);
   const [error, setError] = useState<string | null>(null);

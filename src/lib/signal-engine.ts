@@ -18,7 +18,7 @@ export type Signal = {
 
 /** Average absolute move between consecutive closes (close-only ATR proxy). */
 export function closeAtr(values: number[], period = 14) {
-  const diffs = values.slice(1).map((v, i) => Math.abs(v - values[i]));
+  const diffs = values.slice(1).map((v, i) => Math.abs(v - values[i]!));
   const recent = diffs.slice(-period);
   return recent.reduce((a, b) => a + b, 0) / Math.max(1, recent.length);
 }
@@ -27,7 +27,7 @@ export function closeAtr(values: number[], period = 14) {
  * Builds a trade setup from candle closes.
  * SL = 1.5 x ATR from entry; TP1 = 1.5R, TP2 = 3R.
  */
-export function buildSignal(points: Candle[], livePrice?: number): Signal | null {
+export function buildSignal(points: Candle[], livePrice?: number | undefined): Signal | null {
   const values = points.map((p) => p.value);
   if (values.length < 30) return null;
   const ema9 = EMA.calculate({ period: 9, values }).at(-1)!;
@@ -43,7 +43,7 @@ export function buildSignal(points: Candle[], livePrice?: number): Signal | null
   const emaScore = Math.min(1, Math.abs(ema9 - ema21) / (atr * 2)) * 45;
   const rsiAligned = sign * (rsi - 50);
   const rsiScore = rsiAligned > 0 ? Math.min(1, rsiAligned / 20) * 35 : 0;
-  const ref = values.at(-25) ?? values[0];
+  const ref = values.at(-25) ?? values[0]!;
   const momentumScore = sign * (values.at(-1)! - ref) > 0 ? 20 : 0;
   const overextended = rsi > 75 || rsi < 25 ? 15 : 0;
   const strength = Math.round(Math.max(5, Math.min(99, emaScore + rsiScore + momentumScore - overextended)));
