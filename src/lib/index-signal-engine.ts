@@ -136,7 +136,7 @@ export function analyzeIndex(input:IndexInput):Analysis{
  const st=Stochastic.calculate({high:closed.map(k=>k.high),low:closed.map(k=>k.low),close:closed.map(k=>k.close),period:14,signalPeriod:3}).at(-1);
  const generic:Check[]=[check("MACD histogram",fmt(mac?.histogram),mac?.histogram!=null?mac.histogram>0:null),check("Bollinger 20/2",bb?`${fmt(bb.lower)} / ${fmt(bb.middle)} / ${fmt(bb.upper)}`:"n/a",bb?true:null),check("Stochastic 14/3",st?`K ${fmt(st.k,1)} / D ${fmt(st.d,1)}`:"n/a",st?true:null),check("ATR 14",fmt(ctx.atr),true),check("Data source","Deriv OHLC · completed candles · price-only (no exchange volume)",true),check("Last completed candle",stamp?new Date(stamp).toISOString():"none",stamp!=null)];
  const evaluations=ids.map(s=>({s,...evaluate(s.id,closed,ctx.atr,ctx.adx)}));
- base.strategies=evaluations.map(({s,finding,checks})=>({id:"trend",name:s.label,dir:finding?.dir??null,score:finding?100:null,action:finding?"BUY":"NO TRADE",note:finding?.why??checks.filter(c=>c.ok===false).map(c=>c.label).join(", ")||"No confirmation"}));
+ base.strategies=evaluations.map(({s,finding,checks})=>({id:"trend",name:s.label,dir:finding?.dir??null,score:finding?100:null,action:finding?(finding.dir===1?"BUY":"SELL"):"NO TRADE",note:finding?.why ?? (checks.filter(c=>c.ok===false).map(c=>c.label).join(", ") || "No confirmation")}));
  const valid=evaluations.filter((v):v is typeof v & {finding:Finding}=>v.finding!==null);
  base.checks=generic.concat(evaluations.flatMap(v=>v.checks.map(c=>({...c,label:`${v.s.label}: ${c.label}`}))));
  if(!valid.length)return {...base,action:"WAIT",grade:"MODERATE — WATCHLIST",reasons:["No fully confirmed index setup. No actionable BUY or SELL."]};
