@@ -2,6 +2,7 @@
  * Only private TradePulse accounts can link and send. No client-supplied bot tokens.
  */
 import { createClient } from "@supabase/supabase-js";
+import { env as cloudflareBindings } from "cloudflare:workers";
 
 type D1Statement={
  bind:(...params:(string|number|null)[])=>D1Statement;
@@ -80,7 +81,17 @@ function parseAlert(a:unknown):ValidAlert|null{
 }
 
 export async function handleTelegramApi(request:Request,rawEnv:unknown):Promise<Response>{
- const env=(rawEnv&&typeof rawEnv==="object"?rawEnv:{}) as Env;
+ const passed=(rawEnv&&typeof rawEnv==="object"?rawEnv:{}) as Env;
+ // The Nitro adapter may not pass Worker bindings to the custom server entry.
+ // Cloudflare's native binding proxy provides the actual production D1 and secrets.
+ const native=cloudflareBindings as unknown as Env;
+ const env:Env={
+  TRADEPULSE_DB:passed.TRADEPULSE_DB??native.TRADEPULSE_DB,
+  TRADEPULSE_TELEGRAM_BOT_TOKEN:passed.TRADEPULSE_TELEGRAM_BOT_TOKEN??native.TRADEPULSE_TELEGRAM_BOT_TOKEN,
+  TELEGRAM_WEBHOOK_SECRET:passed.TELEGRAM_WEBHOOK_SECRET??native.TELEGRAM_WEBHOOK_SECRET,
+  SUPABASE_URL:passed.SUPABASE_URL??native.SUPABASE_URL,
+  SUPABASE_PUBLISHABLE_KEY:passed.SUPABASE_PUBLISHABLE_KEY??native.SUPABASE_PUBLISHABLE_KEY,
+ };
  try{
   const url=new URL(request.url),path=url.pathname;
   if(!path.startsWith("/api/signal-alerts/telegram"))return fail("Not found",404);
