@@ -74,8 +74,8 @@ export async function handleTelegramApi(request:Request,env:unknown):Promise<Res
   }
   if(path==="/api/signal-alerts/telegram"&&request.method==="PUT"){
    const body=await readBody(request);
-   if(!isChat(body.chatId))return json({error:"Use a valid numeric Telegram chat ID or public @channel_username"},400);
-   const botToken=body.botToken;
+   if(!isChat(body['chatId']))return json({error:"Use a valid numeric Telegram chat ID or public @channel_username"},400);
+   const botToken=body['botToken'];
    if(botToken!==""&&!isToken(botToken))return json({error:"Invalid Telegram bot token format"},400);
    if(!existing&&!isToken(botToken))return json({error:"Enter a Telegram bot token"},400);
    if(!existing&&botToken==="")return json({error:"Enter a Telegram bot token"},400);
@@ -83,10 +83,10 @@ export async function handleTelegramApi(request:Request,env:unknown):Promise<Res
     encrypted_bot_token:existing!.encrypted_bot_token,token_iv:existing!.token_iv,
    };
    const {error}=await admin.from("telegram_alert_settings").upsert({
-    user_id:uid,...encrypted,chat_id:body.chatId,enabled:body.enabled===true,updated_at:new Date().toISOString(),
+    user_id:uid,...encrypted,chat_id:body['chatId'],enabled:body['enabled']===true,updated_at:new Date().toISOString(),
    },{onConflict:"user_id"});
    if(error)throw Error("Could not save Telegram configuration to the private database");
-   return json({configured:true,enabled:body.enabled===true,chatId:body.chatId});
+   return json({configured:true,enabled:body['enabled']===true,chatId:body['chatId']});
   }
   if(path==="/api/signal-alerts/telegram/test"&&request.method==="POST"){
    if(!existing)return json({error:"Save Telegram configuration first"},400);
@@ -95,13 +95,13 @@ export async function handleTelegramApi(request:Request,env:unknown):Promise<Res
   }
   if(path==="/api/signal-alerts/telegram/send"&&request.method==="POST"){
    if(!existing?.enabled)return json({error:"Telegram notifications are not enabled"},400);
-   const body=await readBody(request),a=body.alert;
+   const body=await readBody(request),a=body['alert'];
    if(!a||typeof a!=="object"||Array.isArray(a))return json({error:"Invalid alert"},400);
    const v=a as Record<string,unknown>;
-   const direction=v.direction;
-   const strategy=clean(v.strategy),symbol=clean(v.symbol),category=clean(v.category);
-   const tf=clean(v.timeframe),id=clean(v.id);
-   const entry=Number(v.entry),stop=Number(v.stopLoss),tp1=Number(v.tp1),tp2=Number(v.tp2),rr=Number(v.rr),time=Number(v.candleTime);
+   const direction=v['direction'];
+   const strategy=clean(v['strategy']),symbol=clean(v['symbol']),category=clean(v['category']);
+   const tf=clean(v['timeframe']),id=clean(v['id']);
+   const entry=Number(v['entry']),stop=Number(v['stopLoss']),tp1=Number(v['tp1']),tp2=Number(v['tp2']),rr=Number(v['rr']),time=Number(v['candleTime']);
    if((direction!=="BUY"&&direction!=="SELL")||!id||!symbol||!strategy||!["M1","M5","M15","M30","H1","H4"].includes(tf)||
       !["FOREX","CRYPTO","INDEX","VOLATILITY","METAL","SYNTHETIC"].includes(category)||
       ![entry,stop,tp1,tp2,rr,time].every(Number.isFinite)||
