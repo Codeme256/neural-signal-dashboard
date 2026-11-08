@@ -33,8 +33,8 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
  const [showSettings,setShowSettings]=useState(false);
  const [status,setStatus]=useState("Not checked");
  const [last,setLast]=useState<StrongAlert|null>(null);
- const [token,setToken]=useState("");
- const [chatId,setChatId]=useState("");
+ const [connectUrl,setConnectUrl]=useState("");
+ const [botAvailable,setBotAvailable]=useState(false);
  const [telegramConfigured,setTelegramConfigured]=useState(false);
  const [telegramEnabled,setTelegramEnabled]=useState(false);
  const [busy,setBusy]=useState(false);
@@ -85,7 +85,7 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
    let cancelled=false;
    void authedRequest("GET","/api/signal-alerts/telegram").then(x=>{
      if(cancelled)return;setTelegramConfigured(x['configured']===true);setTelegramEnabled(x['enabled']===true);
-     if(typeof x['chatId']==="string")setChatId(x['chatId']);
+     setBotAvailable(x['botAvailable']===true);
    }).catch((e:Error)=>setTelegramError(e.message));
    return()=>{cancelled=true;};
  },[]);
@@ -111,14 +111,25 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
    if(permission!=="granted"){toast.error("Browser notification permission not granted");return;}
    setDesktop(true);localStorage.setItem(BROWSER_KEY,"true");
  };
- const save=async()=>{
+ const connect=async()=>{
    setBusy(true);
    try{
-     const out=await authedRequest("PUT","/api/signal-alerts/telegram",{botToken:token,chatId,enabled:true});
-     setTelegramConfigured(out['configured']===true);setTelegramEnabled(out['enabled']===true);setToken("");setTelegramError("");
-     toast.success("Telegram settings saved securely");
-   }catch(e){toast.error("Telegram setup failed",{description:e instanceof Error?e.message:"Server unavailable"});}
+     const out=await authedRequest("POST","/api/signal-alerts/telegram/connect",{});
+     if(typeof out['url']!=="string")throw Error("Telegram connect link unavailable");
+     setConnectUrl(out['url']);setTelegramError("");
+     window.open(out['url'],"_blank","noopener,noreferrer");
+     toast.info("Tap Start in Telegram, then return here and check connection.");
+   }catch(e){toast.error("Unable to connect Telegram",{description:e instanceof Error?e.message:"Server unavailable"});}
    finally{setBusy(false);}
+ };
+ const refresh=async()=>{
+   try{
+     const out=await authedRequest("GET","/api/signal-alerts/telegram");
+     setTelegramConfigured(out['configured']===true);setTelegramEnabled(out['enabled']===true);
+     setBotAvailable(out['botAvailable']===true);
+     if(out['configured']===true){setConnectUrl("");toast.success("Your Telegram account is linked");}
+     else toast.info("Open the bot link and tap Start first.");
+   }catch(e){toast.error("Telegram connection check failed",{description:e instanceof Error?e.message:"Server unavailable"});}
  };
  const test=async()=>{
    setBusy(true);
@@ -128,7 +139,7 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
  };
  const disconnect=async()=>{
    setBusy(true);
-   try{await authedRequest("DELETE","/api/signal-alerts/telegram");setTelegramConfigured(false);setTelegramEnabled(false);setChatId("");setToken("");toast.success("Telegram disconnected");}
+   try{await authedRequest("DELETE","/api/signal-alerts/telegram");setTelegramConfigured(false);setTelegramEnabled(false);setConnectUrl("");toast.success("Telegram disconnected");}
    catch(e){toast.error("Unable to disconnect Telegram",{description:e instanceof Error?e.message:"Server unavailable"});}
    finally{setBusy(false);}
  };
@@ -152,21 +163,19 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
    {showSettings&&<div className="mt-4 grid gap-4 rounded-lg border border-border bg-background/50 p-4">
      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={desktop} onChange={()=>void browser()}/> Enable browser pop-up notifications</label>
      <div className="space-y-2">
-       <h3 className="font-display font-bold">Telegram channel alerts</h3>
+       <h3 className="font-display font-bold">Connect to the TradePulse Telegram bot</h3>
        {telegramError && <p role="alert" className="text-xs text-destructive">Telegram backend: {telegramError}</p>}
-       <p className="text-xs text-muted-foreground">The bot must be an administrator of your channel with permission to post. Your bot token is sent to the authenticated server, encrypted at rest, and never returned to this browser.</p>
-       <label className="block text-xs">Bot token (only when setting or replacing)
-         <input type="password" autoComplete="off" value={token} onChange={e=>setToken(e.target.value)} placeholder={telegramConfigured?"Leave blank to keep existing token":"123456789:AA..."} className="mt-1 w-full rounded border border-border bg-background p-2 font-mono text-sm"/>
-       </label>
-       <label className="block text-xs">Channel ID (e.g. -100… or @channel_username)
-         <input type="text" autoComplete="off" value={chatId} onChange={e=>setChatId(e.target.value)} placeholder="@your_channel" className="mt-1 w-full rounded border border-border bg-background p-2 font-mono text-sm"/>
-       </label>
+       <p className="text-xs text-muted-foreground">One bot serves everyone. You do not need a bot token or channel ID. Connect your personal Telegram account to receive your own TradePulse alerts privately.</p>
+       <p className="font-mono text-xs text-muted-foreground">{telegramConfigured?"● Telegram connected":botAvailable?"○ Telegram not connected":"Shared Telegram bot not configured on the server"}</p>
+       {connectUrl && !telegramConfigured && <a href={connectUrl} target="_blank" rel="noopener noreferrer" className="chip inline-flex">OPEN YOUR TELEGRAM LINK</a>}
        <div className="flex flex-wrap gap-2">
-         <button disabled={busy||!chatId.trim()||(!telegramConfigured&&!token)} onClick={()=>void save()} className="chip chip-active">SAVE TELEGRAM</button>
+         <button disabled={busy||!botAvailable} onClick={()=>void connect()} className="chip chip-active">{telegramConfigured?"RECONNECT TELEGRAM":"CONNECT TELEGRAM"}</button>
+         <button disabled={busy} onClick={()=>void refresh()} className="chip">CHECK CONNECTION</button>
          <button disabled={busy||!telegramConfigured} onClick={()=>void test()} className="chip">SEND TEST</button>
          <button disabled={busy||!telegramConfigured} onClick={()=>void disconnect()} className="chip">DISCONNECT</button>
        </div>
-       <p className="text-xs text-muted-foreground">Telegram delivery requires the Cloudflare server secrets and database migration described in the project setup guide. If your browser is closed, this monitor stops; 24/7 scanning requires a separate scheduled server worker.</p>
+       <p className="text-xs text-muted-foreground">Tap Connect Telegram, press Start in the Telegram bot, then Check Connection. The connection link expires in 10 minutes. Do not share it.</p>
+       <p className="text-xs text-muted-foreground">Telegram delivery requires the private shared-bot Cloudflare secrets, webhook and database migration. If your browser is closed, this monitor stops; 24/7 scanning requires a separate scheduled server worker.</p>
      </div>
    </div>}
  </section>;
