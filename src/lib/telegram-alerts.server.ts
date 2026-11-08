@@ -41,11 +41,26 @@ const hashCode=async(code:string)=>{
 async function authenticatedUser(request:Request,env:Env):Promise<string|null>{
  const bearer=request.headers.get("Authorization");
  if(!bearer?.startsWith("Bearer ")||bearer.length>3000)return null;
- const key=env.SUPABASE_SERVICE_ROLE_KEY||env.SUPABASE_PUBLISHABLE_KEY;
- if(!env.SUPABASE_URL||!key)throw Error("Supabase authentication server secrets are missing");
- const client=createClient(env.SUPABASE_URL,key,{auth:{persistSession:false,autoRefreshToken:false}});
+ // Cloudflare separates build-time VITE_ config from Worker runtime bindings.
+ // Reuse the same PUBLIC authentication URL/key already built into TradePulse;
+ // never fall back to, embed, or expose a service-role secret.
+ const runtime=typeof process!=="undefined"?process.env:{};
+ const url=env.SUPABASE_URL||runtime["SUPABASE_URL"]||import.meta.env["VITE_SUPABASE_URL"];
+ const key=env.SUPABASE_PUBLISHABLE_KEY||runtime["SUPABASE_PUBLISHABLE_KEY"]||import.meta.env["VITE_SUPABASE_PUBLISHABLE_KEY"];
+ if(!url||!key)throw Error("TradePulse auth configuration unavailable in this Worker build; redeploy with production VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY");
+ const client=createClient(url,key,{
+  auth:{persistSession:false,autoRefreshToken:false},
+  global:{fetch:(input,init)=>{
+   const headers=new Headers(init?.headers);
+   // Lovable Cloud's new sb_publishable_ keys are API keys, not bearer JWTs.
+   if(key.startsWith("sb_publishable_")&&headers.get("Authorization")===`Bearer ${key}`)headers.delete("Authorization");
+   headers.set("apikey",key);
+   return fetch(input,{...init,headers});
+  }},
+ });
  const {data:{user},error}=await client.auth.getUser(bearer.slice(7));
- return error?null:user?.id??null;
+ if(error)throw Error("TradePulse login verification failed; sign out and back in, then retry");
+ return user?.id??null;
 }
 type ValidAlert={id:string;symbol:string;strategy:string;category:string;direction:"BUY"|"SELL";timeframe:string;entry:number;stop:number;tp1:number;tp2:number;rr:number;candleTime:number};
 function parseAlert(a:unknown):ValidAlert|null{
