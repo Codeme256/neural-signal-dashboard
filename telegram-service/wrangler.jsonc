@@ -1,0 +1,14 @@
+{
+  "$schema": "https://unpkg.com/wrangler@4/config-schema.json",
+  "name": "tradepulse-telegram-service",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-11-08",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "TRADEPULSE_DB",
+      "database_name": "tradepulse-telegram",
+      "database_id": "3d9bb1bf-f57f-4ec1-b60f-f0f5a62204d6"
+    }
+  ]
+}

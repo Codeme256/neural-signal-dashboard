@@ -50,10 +50,6 @@ function isH3SwallowedErrorBody(body: string): boolean {
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
-      if (new URL(request.url).pathname.startsWith("/api/signal-alerts/telegram")) {
-        const { handleTelegramApi } = await import("./lib/telegram-alerts.server");
-        return await handleTelegramApi(request, env);
-      }
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);
       return await normalizeCatastrophicSsrResponse(response);
