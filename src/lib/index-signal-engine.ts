@@ -29,7 +29,7 @@ const check = (label:string, value:string, ok:boolean | null):Check => ({ label,
 const fmt=(n:number|null|undefined,d=3)=>n == null ? "n/a" : n.toFixed(d);
 const lab=(dir:Dir)=>dir===1?"bullish":"bearish";
 
-function evaluate(id: IndexStrategyId, c: Ohlc[], atr: number, adx: number | null): { finding:Finding|null; checks:Check[] } {
+function evaluate(id: IndexStrategyId, c: Ohlc[], atr: number, adx: number | null, breakoutThreshold: number): { finding:Finding|null; checks:Check[] } {
   const n=c.length, last=c[n-1]!, prev=c[n-2]!, closes=c.map(k=>k.close);
   const e50=emaSeries(closes,50), e9=emaSeries(closes,9), e21=emaSeries(closes,21), e55=emaSeries(closes,55);
   const rsi=rsiSeries(closes), r=rsi.at(-1) ?? null, a=(label:string,v:number|null|undefined)=>check(label,fmt(v),v!=null);
@@ -89,8 +89,8 @@ function evaluate(id: IndexStrategyId, c: Ohlc[], atr: number, adx: number | nul
     const range=c.slice(-17,-1),high=Math.max(...range.map(k=>k.high)),low=Math.min(...range.map(k=>k.low));
     const compression=avg!=null&&avg>0&&Math.min(...priorAtr.slice(-10))<avg*0.8;
     const consolidation=high-low<=4*atr;
-    const up=last.close>high&&last.close>last.open&&(last.close-high)>=(0.25*atr);
-    const down=last.close<low&&last.close<last.open&&(low-last.close)>=0.25*atr;
+    const up=last.close>high&&last.close>last.open&&(last.close-high)>=(breakoutThreshold*atr);
+    const down=last.close<low&&last.close<last.open&&(low-last.close)>=breakoutThreshold*atr;
     checks.push(a("ATR 14",atr),a("Prior ATR avg",avg));
     yes("ATR compression",compression,compression?"Confirmed":"Not compressed");
     yes("Consolidation",consolidation,`${fmt(low)}–${fmt(high)}`);
@@ -134,8 +134,8 @@ export function analyzeIndex(input:IndexInput):Analysis{
  const mac=MACD.calculate({values:closed.map(k=>k.close),fastPeriod:12,slowPeriod:26,signalPeriod:9,SimpleMAOscillator:false,SimpleMASignal:false}).at(-1);
  const bb=BollingerBands.calculate({period:20,stdDev:2,values:closed.map(k=>k.close)}).at(-1);
  const st=Stochastic.calculate({high:closed.map(k=>k.high),low:closed.map(k=>k.low),close:closed.map(k=>k.close),period:14,signalPeriod:3}).at(-1);
- const generic:Check[]=[check("MACD histogram",fmt(mac?.histogram),mac?.histogram!=null?mac.histogram>0:null),check("Bollinger 20/2",bb?`${fmt(bb.lower)} / ${fmt(bb.middle)} / ${fmt(bb.upper)}`:"n/a",bb?true:null),check("Stochastic 14/3",st?`K ${fmt(st.k,1)} / D ${fmt(st.d,1)}`:"n/a",st?true:null),check("ATR 14",fmt(ctx.atr),true),check("Data source","Deriv OHLC · completed candles · price-only (no exchange volume)",true),check("Last completed candle",stamp?new Date(stamp).toISOString():"none",stamp!=null)];
- const evaluations=ids.map(s=>({s,...evaluate(s.id,closed,ctx.atr,ctx.adx)}));
+ const generic:Check[]=[check("MACD histogram",mac?.histogram!=null?`${fmt(mac.histogram)} · ${mac.histogram>0?"bullish":mac.histogram<0?"bearish":"neutral"}`:"n/a",mac?.histogram!=null?mac.histogram>0:null),check("Bollinger 20/2",bb?`${fmt(bb.lower)} / ${fmt(bb.middle)} / ${fmt(bb.upper)} · ${ctx.last.close>bb.upper?"above upper":ctx.last.close<bb.lower?"below lower":"inside bands"}`:"n/a",bb?true:null),check("Stochastic 14/3",st?`K ${fmt(st.k,1)} / D ${fmt(st.d,1)} · ${st.k>80?"overbought":st.k<20?"oversold":st.k>st.d?"bullish crossover context":"bearish crossover context"}`:"n/a",st?true:null),check("ATR 14",fmt(ctx.atr),true),check("Data source","Deriv OHLC · completed candles · price-only (no exchange volume)",true),check("Last completed candle",stamp?new Date(stamp).toISOString():"none",stamp!=null)];
+ const evaluations=ids.map(s=>({s,...evaluate(s.id,closed,ctx.atr,ctx.adx,input.breakoutAtrThreshold??0.25)}));
  base.strategies=evaluations.map(({s,finding,checks})=>({id:s.id,name:s.label,dir:finding?.dir??null,score:finding?100:null,action:finding?(finding.dir===1?"BUY":"SELL"):"NO TRADE",note:finding?.why ?? (checks.filter(c=>c.ok===false).map(c=>c.label).join(", ") || "No confirmation")}));
  const valid=evaluations.filter((v):v is typeof v & {finding:Finding}=>v.finding!==null);
  base.checks=generic.concat(evaluations.flatMap(v=>v.checks.map(c=>({...c,label:`${v.s.label}: ${c.label}`}))));
