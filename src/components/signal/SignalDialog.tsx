@@ -35,7 +35,7 @@ async function analyseMarket(m: DerivMarket, tf: Timeframe, strategy: StrategyFi
   }
 }
 
-async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], breakoutThreshold: number, signal: AbortSignal): Promise<Result> {
+async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], breakoutThreshold: number, btcStrategy:BtcStrategySelection, btcEnabled:BtcStrategyId[], signal: AbortSignal): Promise<Result> {
   let candles;
   try {
     candles = await fetchCandles(m.derivSymbol, tf, signal);
@@ -106,7 +106,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
       setResults(found);
       setDone(true);
       void storeScanSession(found.map(r => ({ symbol: r.market.symbol, derivSymbol: r.market.derivSymbol, category: r.market.category, timeframe: tf, strategy: r.analysis?.strategy ?? (r.market.category === "INDEX" ? indexStrategy : strategy), action: r.analysis?.action ?? "UNAVAILABLE", at: Date.now(), candleTime: r.analysis?.lastCandleTime ?? null, entry: r.analysis?.entry ?? null, stopLoss: r.analysis?.stopLoss ?? null, tp1: r.analysis?.takeProfit1 ?? null, tp2: r.analysis?.takeProfit2 ?? null, error: r.error ?? r.analysis?.reasons.join("; ") ?? null, indicatorSnapshot: r.analysis?.checks ?? [], marketRegime: r.analysis?.marketRegime ?? null, dataStatus: r.error ? "UNAVAILABLE" as const : r.analysis?.reasons.some(x=>/stale/i.test(x)) ? "STALE" as const : r.analysis?.marketOpen ? "FRESH" as const : "CLOSED" as const }))).catch(console.error);
-      for (const r of found) if (r.market.category === "INDEX" && r.analysis && (r.analysis.action === "BUY" || r.analysis.action === "SELL")) {
+      for (const r of found) if ((r.market.category === "INDEX" || isBitcoinMarket(r.market.derivSymbol,r.market.category)) && r.analysis && (r.analysis.action === "BUY" || r.analysis.action === "SELL")) {
         const a = r.analysis;
         if (a.lastCandleTime != null && a.entry != null && a.stopLoss != null && a.takeProfit1 != null && a.takeProfit2 != null) {
           const id = signalId(r.market.derivSymbol, tf, a.lastCandleTime, a.action);
