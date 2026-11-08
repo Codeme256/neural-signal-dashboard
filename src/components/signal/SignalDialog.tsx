@@ -8,6 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import type { DerivMarket } from "@/lib/deriv-data";
 import { formatMarketPrice } from "@/lib/deriv-data";
 import { analyze } from "@/lib/signal-engine";
+import { analyzeIndex, INDEX_STRATEGIES, INDEX_DEFAULT_ENABLED, type IndexStrategyId, type IndexStrategySelection } from "@/lib/index-signal-engine";
+import { storeScanSession } from "@/lib/index-scan-history";
 import { fetchCandles } from "@/lib/candle-store";
 import { DerivError, isAbortError } from "@/lib/deriv-client";
 import { CONFIRM_TF, HIGHER_TF, STRATEGIES, TIMEFRAMES, type Analysis, type StrategyFilter, type Timeframe } from "@/lib/strategies/types";
@@ -20,17 +22,18 @@ const MIN_STRENGTH = 70;
 const BATCH = 3;
 // Remember the user's last choice between scans.
 const lastChoice: { tf: Timeframe; strategy: StrategyFilter } = { tf: "H1", strategy: "all" };
+const readEnabled = (): IndexStrategyId[] => { try { const v = JSON.parse(localStorage.getItem("tradepulse-index-enabled-v1") || "null"); return Array.isArray(v) ? INDEX_STRATEGIES.filter(s => v.includes(s.id)).map(s => s.id) : INDEX_DEFAULT_ENABLED; } catch { return INDEX_DEFAULT_ENABLED; } };
 
-async function analyseMarket(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, signal: AbortSignal): Promise<Result> {
+async function analyseMarket(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], signal: AbortSignal): Promise<Result> {
   try {
-    return await analyseMarketUnsafe(m, tf, strategy, signal);
+    return await analyseMarketUnsafe(m, tf, strategy, indexStrategy, enabled, signal);
   } catch (e) {
     if (isAbortError(e)) throw e;
     return { market: m, analysis: null, error: "Analysis failed for this market." };
   }
 }
 
-async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, signal: AbortSignal): Promise<Result> {
+async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], signal: AbortSignal): Promise<Result> {
   let candles;
   try {
     candles = await fetchCandles(m.derivSymbol, tf, signal);
@@ -41,9 +44,11 @@ async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: Stra
   }
   const higher = await fetchCandles(m.derivSymbol, HIGHER_TF[tf], signal).catch((e) => { if (isAbortError(e)) throw e; return null; });
   const input = { candles, higher, timeframe: tf, open: m.open, decimals: m.decimals, strategy };
-  let analysis = analyze({ ...input, now: Date.now() });
+  let analysis = m.category === "INDEX"
+    ? analyzeIndex({ candles, higher, timeframe: tf, open: m.open, decimals: m.decimals, strategy: indexStrategy, enabled, now: Date.now() })
+    : analyze({ ...input, now: Date.now() });
   // Only fetch the lower confirmation timeframe when there is a setup worth confirming.
-  if (CONFIRM_TF[tf] !== tf && analysis.entry !== null) {
+  if (m.category !== "INDEX" && CONFIRM_TF[tf] !== tf && analysis.entry !== null) {
     const confirm = await fetchCandles(m.derivSymbol, CONFIRM_TF[tf], signal).catch((e) => { if (isAbortError(e)) throw e; return null; });
     analysis = analyze({ ...input, confirm, now: Date.now() });
   }
@@ -57,6 +62,9 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
   const [done, setDone] = useState(false);
   const [tf, setTf] = useState<Timeframe>(lastChoice.tf);
   const [strategy, setStrategy] = useState<StrategyFilter>(lastChoice.strategy);
+  const [indexStrategy, setIndexStrategy] = useState<IndexStrategySelection>("all");
+  const [indexEnabled, setIndexEnabled] = useState<IndexStrategyId[]>(readEnabled);
+  const onlyIndex = markets.length > 0 && markets.every(m => m.category === "INDEX");
 
   useEffect(() => {
     if (!open) return;
@@ -73,7 +81,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
         for (let i = 0; i < targets.length; i += BATCH) {
           const batch = targets.slice(i, i + BATCH);
           setCurrent(batch.map((m) => m.symbol).join(" · "));
-          found.push(...(await Promise.all(batch.map((m) => analyseMarket(m, tf, strategy, ctrl.signal)))));
+          found.push(...(await Promise.all(batch.map((m) => analyseMarket(m, tf, strategy, indexStrategy, indexEnabled, ctrl.signal)))));
           setProgress(Math.round(((i + batch.length) / targets.length) * 100));
           await new Promise((r) => setTimeout(r, 0)); // keep the UI responsive between batches
         }
@@ -86,17 +94,25 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
       if (ctrl.signal.aborted) return;
       setResults(found);
       setDone(true);
+      storeScanSession(found.map(r => ({ symbol: r.market.symbol, derivSymbol: r.market.derivSymbol, category: r.market.category, timeframe: tf, strategy: r.analysis?.strategy ?? (r.market.category === "INDEX" ? indexStrategy : strategy), action: r.analysis?.action ?? "UNAVAILABLE", at: Date.now(), candleTime: r.analysis?.lastCandleTime ?? null, entry: r.analysis?.entry ?? null, stopLoss: r.analysis?.stopLoss ?? null, tp1: r.analysis?.takeProfit1 ?? null, tp2: r.analysis?.takeProfit2 ?? null, error: r.error ?? r.analysis?.reasons.join("; ") ?? null })));
+      for (const r of found) if (r.market.category === "INDEX" && r.analysis && (r.analysis.action === "BUY" || r.analysis.action === "SELL")) {
+        const a = r.analysis;
+        if (a.lastCandleTime != null && a.entry != null && a.stopLoss != null && a.takeProfit1 != null && a.takeProfit2 != null) {
+          const id = signalId(r.market.derivSymbol, tf, a.lastCandleTime, a.action);
+          if (!trackerStore.has(id)) void trackerStore.add({ id, derivSymbol: r.market.derivSymbol, symbol: r.market.symbol, decimals: r.market.decimals, action: a.action, timeframe: tf, strategy: a.strategy, score: a.score, entry: a.entry, stopLoss: a.stopLoss, takeProfit1: a.takeProfit1, takeProfit2: a.takeProfit2, signalTime: a.lastCandleTime }).catch(console.error);
+        }
+      }
       track(found.filter((r) => r.analysis && (r.analysis.action === "BUY" || r.analysis.action === "SELL")).length);
     })();
     return () => ctrl.abort(); // cancel queued requests when closed or settings change
-  }, [open, tf, strategy]);
+  }, [open, tf, strategy, indexStrategy, indexEnabled]);
 
   const ranked = results.filter((r) => r.analysis).sort((a, b) => b.analysis!.score - a.analysis!.score);
   const strong = ranked.filter((r) => r.analysis!.action === "BUY" || r.analysis!.action === "SELL");
   const watch = ranked.filter((r) => r.analysis!.action === "WAIT");
   const unavailable = results.filter((r) => r.error);
   const one = single ? results[0] : undefined;
-  const strategyLabel = STRATEGIES.find((s) => s.id === strategy)?.label ?? "All Strategies";
+  const strategyLabel = onlyIndex ? (INDEX_STRATEGIES.find(s => s.id === indexStrategy)?.label ?? "Enabled Index Strategies") : (STRATEGIES.find((s) => s.id === strategy)?.label ?? "All Strategies");
 
   const title = !done ? "NEURAL SCAN RUNNING"
     : single ? `${markets[0]?.symbol ?? ""} · ${one?.analysis?.action ?? "UNAVAILABLE"}`
@@ -122,16 +138,35 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
                 <button key={t} onClick={() => setTf(t)} aria-pressed={tf === t} className={`chip chip-sm ${tf === t ? "chip-active" : ""}`}>{t}</button>
               ))}
             </div>
-            <Select value={strategy} onValueChange={(v) => setStrategy(v as StrategyFilter)}>
-              <SelectTrigger aria-label="Strategy" className="h-8 w-auto min-w-40 border-border bg-card/60 font-mono text-xs sm:ml-auto">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {STRATEGIES.map((s) => <SelectItem key={s.id} value={s.id} className="font-mono text-xs">{s.label}</SelectItem>)}
-              </SelectContent>
-            </Select>
+            {onlyIndex ? (
+              <Select value={indexStrategy} onValueChange={(v) => setIndexStrategy(v as IndexStrategySelection)}>
+                <SelectTrigger aria-label="Index strategy" className="h-8 w-auto min-w-40 border-border bg-card/60 font-mono text-xs sm:ml-auto"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All enabled index strategies</SelectItem>
+                  {INDEX_STRATEGIES.filter(s => s.timeframes.some(t => t === tf)).map(s => <SelectItem key={s.id} value={s.id}>{s.label}{s.experimental ? " · experimental" : ""}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Select value={strategy} onValueChange={(v) => setStrategy(v as StrategyFilter)}>
+                <SelectTrigger aria-label="Forex strategy" className="h-8 w-auto min-w-40 border-border bg-card/60 font-mono text-xs sm:ml-auto"><SelectValue /></SelectTrigger>
+                <SelectContent>{STRATEGIES.map(s => <SelectItem key={s.id} value={s.id}>{s.label}</SelectItem>)}</SelectContent>
+              </Select>
+            )}
           </div>
 
+          {onlyIndex && <div className="mb-3 rounded-lg border border-border p-3">
+            <p className="font-mono text-[10px] tracking-widest text-muted-foreground">INDEX-ONLY STRATEGIES · ENABLE/DISABLE (FOREX UNAFFECTED)</p>
+            <div className="mt-2 flex flex-wrap gap-2">{INDEX_STRATEGIES.map(item => (
+              <label key={item.id} className="flex items-center gap-1.5 font-mono text-[11px]">
+                <input type="checkbox" checked={indexEnabled.includes(item.id)} onChange={e => {
+                  const next = e.target.checked ? [...indexEnabled, item.id] : indexEnabled.filter(x => x !== item.id);
+                  setIndexEnabled(next); try { localStorage.setItem("tradepulse-index-enabled-v1", JSON.stringify(next)); } catch {}
+                }}/>
+                {item.label}{item.experimental ? " (experimental)" : ""}
+              </label>
+            ))}</div>
+            <p className="mt-1 text-[10px] text-muted-foreground">Benchmark enabled by default; experimental strategies require opt-in. Index results use completed Deriv OHLC candles only.</p>
+          </div>}
           {!done && (
             <div className="py-2 font-mono text-sm text-primary">
               <NeuralScan
