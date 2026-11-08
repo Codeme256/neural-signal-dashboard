@@ -18,7 +18,7 @@ type Sub={user_id:string;telegram_chat_id:string;telegram_user_id:string;enabled
 type LinkRow={user_id:string;expires_at:string};
 const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{"Content-Type":"application/json","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}});
 const fail=(message:string,status=400)=>json({error:message},status);
-const tokenValid=(s:unknown):s is string=>typeof s==="string"&&/^\\d{5,15}:[A-Za-z0-9_-]{25,}$/.test(s);
+const tokenValid=(s:unknown):s is string=>typeof s==="string"&&/^\d{5,15}:[A-Za-z0-9_-]{25,}$/.test(s);
 const bot=(env:Env)=>{if(!tokenValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN))throw Error("Shared bot token missing from Cloudflare secrets");return env.TRADEPULSE_TELEGRAM_BOT_TOKEN;};
 const db=(env:Env)=>{if(!env.TRADEPULSE_DB)throw Error("Bind D1 database as TRADEPULSE_DB in Cloudflare Worker settings");return env.TRADEPULSE_DB;};
 async function telegram(token:string,method:string,body:Record<string,unknown>){
@@ -77,12 +77,12 @@ export async function handleTelegramApi(request:Request,rawEnv:unknown):Promise<
    const chat=(msg["chat"]??{}) as Record<string,unknown>;
    const from=(msg["from"]??{}) as Record<string,unknown>;
    const text=msg["text"];
-   if(chat["type"]!=="private"||typeof text!=="string"||!/^\\/start\\s+[0-9a-f]{48}$/.test(text))return json({ok:true});
-   const hash=await hashCode(text.split(/\\s+/)[1]!);
+   if(chat["type"]!=="private"||typeof text!=="string"||!/^\/start\s+[0-9a-f]{48}$/.test(text))return json({ok:true});
+   const hash=await hashCode(text.split(/\s+/)[1]!);
    const link=await db(env).prepare("SELECT user_id,expires_at FROM telegram_link_codes WHERE code_hash=?").bind(hash).first<LinkRow>();
    if(!link||Date.parse(link.expires_at)<=Date.now())return json({ok:true});
    const user=String(from["id"]??""),chatId=String(chat["id"]??"");
-   if(!/^\\d{2,20}$/.test(user)||!/^\\d{2,20}$/.test(chatId)||user!==chatId)return json({ok:true});
+   if(!/^\d{2,20}$/.test(user)||!/^\d{2,20}$/.test(chatId)||user!==chatId)return json({ok:true});
    const existing=await db(env).prepare("SELECT user_id FROM telegram_subscriptions WHERE telegram_user_id=?").bind(user).first<{user_id:string}>();
    if(existing&&existing.user_id!==link.user_id)return json({ok:true});
    try{
