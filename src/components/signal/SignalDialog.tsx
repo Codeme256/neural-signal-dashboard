@@ -243,6 +243,8 @@ function SignalCard({ market, analysis: a, detailed = false }: { market: DerivMa
         <span>{a.higherTimeframe} {a.higherTrend}</span>
         <span className={a.marketOpen ? "text-bull" : ""}>{a.marketOpen ? "OPEN" : "CLOSED"}</span>
         {a.lastCandleTime && <span title={new Date(a.lastCandleTime).toUTCString()}>CANDLE {new Date(a.lastCandleTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · {timeAgo(a.lastCandleTime)}</span>}
+        {a.expiresAt && <span>EXPIRES {new Date(a.expiresAt).toLocaleTimeString([], { hour:"2-digit", minute:"2-digit" })}</span>}
+        {market.category === "INDEX" && <span>DERIV OHLC · PRICE-ONLY</span> }
       </div>
 
       <div className="mt-3 flex items-center gap-3">
