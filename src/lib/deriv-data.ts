@@ -4,7 +4,14 @@ import type { Ohlc } from './strategies/types';
 
 export const majorForex = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD'];
 const metals = ['frxXAUUSD', 'frxXAGUSD', 'frxXPTUSD', 'frxXPDUSD'];
-const syntheticSymbols = ['R_10', 'R_25', 'R_50', 'R_75', 'R_100', '1HZ10V', '1HZ25V', '1HZ50V', '1HZ75V', '1HZ100V', 'BOOM500', 'BOOM1000', 'CRASH500', 'CRASH1000', 'stpRNG'];
+const syntheticSymbols = ['BOOM500', 'BOOM1000', 'CRASH500', 'CRASH1000', 'stpRNG'];
+/** Exact volatility-family names from Deriv metadata; exclude Volatility Switch/Jump/Drift families. */
+export function isDerivVolatilityIndex(item: { market: string; underlying_symbol: string; underlying_symbol_name: string }): boolean {
+  if (item.market !== 'synthetic_index') return false;
+  const name = item.underlying_symbol_name.trim();
+  return /^Volatility\s+\d+(?:\s*\(1s\))?\s+Index$/i.test(name) ||
+    /^(?:R_\d+|1HZ\d+V)$/i.test(item.underlying_symbol);
+}
 const number = z.number().finite().positive();
 /** Deriv has used several stock-index market codes across API variants; classify only real index categories. */
 export const isStockIndexMarket = (market: string) => ["indices", "stock_index", "stock_indices", "stockindex"].includes(market.toLowerCase());
@@ -14,9 +21,9 @@ export type DerivQuote = { symbol: string; price: number; epoch: number; retriev
 export type Candle = { time: number; value: number };
 
 export function parseDerivMarkets(raw: unknown): DerivMarket[] {
-  return z.array(symbolSchema).parse(raw).filter(item => metals.includes(item.underlying_symbol) || item.market === 'cryptocurrency' || majorForex.some(pair => item.underlying_symbol === `frx${pair}`) || isStockIndexMarket(item.market) || syntheticSymbols.includes(item.underlying_symbol)).map(item => {
+  return z.array(symbolSchema).parse(raw).filter(item => metals.includes(item.underlying_symbol) || item.market === 'cryptocurrency' || majorForex.some(pair => item.underlying_symbol === `frx${pair}`) || isStockIndexMarket(item.market) || syntheticSymbols.includes(item.underlying_symbol) || isDerivVolatilityIndex(item)).map(item => {
     const symbol = item.underlying_symbol.replace(/^(frx|cry)/, '');
-    return { symbol, ticker: symbol, name: item.underlying_symbol_name, category: item.market === 'forex' ? 'FOREX' : item.market === 'commodities' ? 'METAL' : isStockIndexMarket(item.market) ? 'INDEX' : item.market === 'cryptocurrency' ? 'CRYPTO' : 'SYNTHETIC', derivSymbol: item.underlying_symbol, decimals: Math.max(0, Math.round(-Math.log10(item.pip_size))), open: item.exchange_is_open === 1 && item.is_trading_suspended === 0, change: 0, volatility: 0, confidence: 0, bias: 'WAIT', horizon: '1H candles', note: '' };
+    return { symbol, ticker: symbol, name: item.underlying_symbol_name, category: item.market === 'forex' ? 'FOREX' : item.market === 'commodities' ? 'METAL' : isStockIndexMarket(item.market) ? 'INDEX' : item.market === 'cryptocurrency' ? 'CRYPTO' : isDerivVolatilityIndex(item) ? 'VOLATILITY' : 'SYNTHETIC', derivSymbol: item.underlying_symbol, decimals: Math.max(0, Math.round(-Math.log10(item.pip_size))), open: item.exchange_is_open === 1 && item.is_trading_suspended === 0, change: 0, volatility: 0, confidence: 0, bias: 'WAIT', horizon: '1H candles', note: '' };
   }).sort((a, b) => (a.symbol === 'XAUUSD' ? -1 : b.symbol === 'XAUUSD' ? 1 : a.category.localeCompare(b.category) || a.name.localeCompare(b.name)));
 }
 
