@@ -6,7 +6,7 @@ export type ScanRecord = {
   symbol:string;derivSymbol:string;category:string;timeframe:string;strategy:string|null;
   action:string;at:number;candleTime:number|null;entry:number|null;stopLoss:number|null;
   tp1:number|null;tp2:number|null;error:string|null;scanId?:string;
-  indicatorSnapshot?:Check[];marketRegime?:string|null;dataStatus?:"FRESH"|"STALE"|"UNAVAILABLE"|"CLOSED";
+  indicatorSnapshot?:Check[];marketRegime?:string|null;dataStatus?:"FRESH"|"STALE"|"UNAVAILABLE"|"CLOSED"|undefined;
 };
 const KEY="tradepulse-scan-audit-v2", LIMIT=2000;
 const key=(uid:string)=>KEY+":"+uid;
