@@ -91,6 +91,7 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
  },[]);
  useEffect(()=>{
    if(enabled&&markets.length>0){const ctrl=new AbortController();void run(ctrl.signal);return()=>ctrl.abort();}
+   return undefined;
  },[enabled,markets.length,run]);
  useEffect(()=>{
    if(!enabled)return;
