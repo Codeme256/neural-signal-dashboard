@@ -1,5 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { getScanHistory, type ScanRecord } from "@/lib/index-scan-history";
+import { INDEX_STRATEGIES } from "@/lib/index-signal-engine";
+import { outcomeMetrics } from "@/lib/index-performance";
 import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { UserMenu } from "@/components/auth/UserMenu";
 import { fetchCandlesRange } from "@/lib/candle-store";
@@ -55,6 +58,34 @@ function AnalysisPage() {
   useOutcomeChecker(list);
   const sum = summarize(list);
   const hasFinished = list.some(isFinal);
+  const [scanHistory, setScanHistory] = useState<ScanRecord[]>([]);
+  const [indexFilter, setIndexFilter] = useState("ALL");
+  const [strategyFilter, setStrategyFilter] = useState("ALL");
+  const [timeframeFilter, setTimeframeFilter] = useState("ALL");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  useEffect(() => { const refresh=()=>{ void getScanHistory().then(setScanHistory); }; refresh();window.addEventListener("tradepulse-scan-recorded",refresh);return ()=>window.removeEventListener("tradepulse-scan-recorded",refresh); }, []);
+  const indexScans = scanHistory.filter(r=>r.category==="INDEX");
+  const matches=(symbol:string,strategy:string|null,tf:string,at:number)=>
+    (indexFilter==="ALL"||symbol===indexFilter)&&
+    (strategyFilter==="ALL"||strategy===strategyFilter)&&
+    (timeframeFilter==="ALL"||tf===timeframeFilter)&&
+    (!dateFrom||at>=new Date(dateFrom+"T00:00:00").getTime())&&
+    (!dateTo||at<=new Date(dateTo+"T23:59:59.999").getTime());
+  const visibleScans = indexScans.filter(r=>matches(r.symbol,r.strategy,r.timeframe,r.at));
+  const uniqueSessions = new Set(visibleScans.map(r=>r.scanId)).size;
+  const buyCount = visibleScans.filter(r=>r.action==="BUY").length;
+  const sellCount = visibleScans.filter(r=>r.action==="SELL").length;
+  const noTradeCount = visibleScans.filter(r=>r.action==="WAIT"||r.action==="NO TRADE").length;
+  const verifiedIndex = list.filter(s => INDEX_STRATEGIES.some(x => x.label===s.strategy));
+  const filteredVerified = verifiedIndex.filter(s=>matches(s.symbol,s.strategy,s.timeframe,s.signalTime));
+  const regimeFor=(s:typeof filteredVerified[number])=>indexScans.find(r=>r.symbol===s.symbol&&r.timeframe===s.timeframe&&r.candleTime===s.signalTime&&r.strategy===s.strategy)?.marketRegime??"UNKNOWN";
+  const metrics=outcomeMetrics(filteredVerified);
+  const resultsBy=(key:(s:typeof filteredVerified[number])=>string)=>{
+    const groups = new Map<string, typeof filteredVerified>();
+    for(const s of filteredVerified){const k=key(s);groups.set(k,[...(groups.get(k)??[]),s]);}
+    return [...groups.entries()].map(([name,items])=>({name,metrics:outcomeMetrics(items)})).sort((a,b)=>b.metrics.resolved-a.metrics.resolved);
+  };
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-background">
@@ -84,6 +115,60 @@ function AnalysisPage() {
           Win rate = won ÷ (won + lost) of your tracked signals only{sum.expired ? ` · ${sum.expired} expired not counted` : ""}. A small number of results says little about future performance.
         </p>
 
+        <section className="mt-8 space-y-3 rounded-xl border border-border bg-card/60 p-4">
+          <h2 className="font-display text-lg font-bold">INDEX SCAN HISTORY</h2>
+          <p className="font-mono text-[11px] text-muted-foreground">Automatic per-account scan audit; browser fallback works now. Cross-device synchronization requires the managed database migration. Analyses are NOT resolved outcomes.</p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <Stat label="Scan sessions" value={uniqueSessions}/>
+            <Stat label="Index analyses" value={visibleScans.length}/>
+            <Stat label="BUY" value={buyCount}/>
+            <Stat label="SELL" value={sellCount}/>
+            <Stat label="WAIT / NO TRADE" value={noTradeCount}/>
+          </div>
+          <div className="flex flex-wrap items-end gap-3 font-mono text-xs">
+            <label>Index <select value={indexFilter} onChange={e=>setIndexFilter(e.target.value)} className="mt-1 block rounded border border-border bg-background p-1.5">
+              <option value="ALL">All indices</option>
+              {[...new Set([...indexScans.map(r=>r.symbol),...verifiedIndex.map(r=>r.symbol)])].sort().map(x=><option key={x} value={x}>{x}</option>)}
+            </select></label>
+            <label>Strategy <select value={strategyFilter} onChange={e=>setStrategyFilter(e.target.value)} className="mt-1 block max-w-52 rounded border border-border bg-background p-1.5">
+              <option value="ALL">All strategies</option>
+              {INDEX_STRATEGIES.map(x=><option key={x.id} value={x.label}>{x.label}</option>)}
+            </select></label>
+            <label>Timeframe <select value={timeframeFilter} onChange={e=>setTimeframeFilter(e.target.value)} className="mt-1 block rounded border border-border bg-background p-1.5">
+              <option value="ALL">All TFs</option>{["M5","M15","M30","H1","H4"].map(t=><option key={t} value={t}>{t}</option>)}
+            </select></label>
+            <label>From <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} className="mt-1 block rounded border border-border bg-background p-1.5"/></label>
+            <label>To <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} className="mt-1 block rounded border border-border bg-background p-1.5"/></label>
+          </div>
+          <div className="max-h-80 space-y-2 overflow-y-auto">
+            {visibleScans.length===0?<p className="text-xs text-muted-foreground">No matching index scans yet.</p>:visibleScans.slice(0,100).map((r,i)=>(
+              <div key={r.scanId+"-"+r.derivSymbol+"-"+i} className="rounded border border-border p-2 font-mono text-[11px]">
+                <div className="flex flex-wrap items-center gap-2"><strong>{r.symbol}</strong><span>{r.timeframe}</span><span className="text-primary">{r.action}</span><span>{new Date(r.at).toLocaleString()}</span></div>
+                <p className="text-muted-foreground">{r.strategy??"No strategy"}{r.error?" · "+r.error:""}</p>
+                {r.entry!=null&&<p>Entry {r.entry} · SL {r.stopLoss} · TP1 {r.tp1} · TP2 {r.tp2}</p>}
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="mt-5 rounded-xl border border-border bg-card/60 p-4">
+          <h2 className="font-display text-lg font-bold">INDEX SIGNAL OUTCOME ANALYSIS</h2>
+          <p className="mt-1 font-mono text-[11px] text-muted-foreground">Completed, candle-verified signal outcomes only. Hypothetical full TP1 exit or full stop; excludes spread, slippage and fees. No actual trade execution or guaranteed profitability. Historical backtests NOT included.</p>
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <Stat label="Resolved" value={metrics.resolved}/>
+            <Stat label="Win rate" value={metrics.winRate==null?"—":metrics.winRate+"%"}/>
+            <Stat label="Average R" value={metrics.avgR==null?"—":metrics.avgR.toFixed(2)}/>
+            <Stat label="Gross profit factor" value={metrics.profitFactor==null?"—":metrics.profitFactor.toFixed(2)}/>
+            <Stat label="Max drawdown (R)" value={metrics.maxDrawdownR==null?"—":metrics.maxDrawdownR.toFixed(2)}/>
+          </div>
+          {(["strategy","timeframe","index","month","regime"] as const).map(k=>{
+            const groups=k==="strategy"?resultsBy(s=>s.strategy??"Unknown"):k==="timeframe"?resultsBy(s=>s.timeframe):k==="index"?resultsBy(s=>s.symbol):k==="month"?resultsBy(s=>new Date(s.signalTime).toISOString().slice(0,7)):resultsBy(regimeFor);
+            return <details key={k} className="mt-3 rounded border border-border p-2">
+              <summary className="cursor-pointer font-mono text-xs uppercase">Results by {k}</summary>
+              {groups.length===0?<p className="mt-2 text-xs text-muted-foreground">No verified results.</p>:groups.map(g=><div key={g.name} className="mt-2 flex flex-wrap justify-between gap-2 font-mono text-[11px]"><span>{g.name}</span><span>{g.metrics.resolved} resolved · Win {g.metrics.winRate??"—"}% · Avg {g.metrics.avgR??"—"}R</span></div>)}
+            </details>;
+          })}
+          <p className="mt-3 font-mono text-[11px] text-muted-foreground">Market regime uses scan-time ADX when recorded; otherwise UNKNOWN. Costs and time-separated out-of-sample backtests remain pending.</p>
+        </section>
         {list.length === 0 ? (
           <div className="mt-12 rounded-xl border border-border bg-card/60 p-8 text-center backdrop-blur">
             <p className="font-display text-lg font-bold">No tracked signals yet</p>
