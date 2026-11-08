@@ -18,8 +18,8 @@ export const BTC_STRATEGIES = [
 ] as const;
 export type BtcStrategyId = (typeof BTC_STRATEGIES)[number]["id"];
 export type BtcStrategySelection = BtcStrategyId | "all";
-/** Start with no live actionable strategies until the user opts into unvalidated testing. */
-export const BTC_DEFAULT_ENABLED: BtcStrategyId[] = [];
+/** Two conservative, testable starting configurations; both are experimental, NOT proven profitable. */
+export const BTC_DEFAULT_ENABLED: BtcStrategyId[] = ["btc-trend","btc-breakout"];
 export const isBitcoinMarket = (derivSymbol:string,category:string) =>
   category==="CRYPTO" && /^(?:cry)?BTCUSD$/i.test(derivSymbol);
 
