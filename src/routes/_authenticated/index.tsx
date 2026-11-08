@@ -20,10 +20,11 @@ export const Route = createFileRoute("/_authenticated/")({
   component: Dashboard,
 });
 
-const categories = ["ALL", "FOREX", "INDEX", "CRYPTO", "METAL", "SYNTHETIC"];
+const categories = ["ALL", "FOREX", "INDEX", "VOLATILITY", "CRYPTO", "METAL", "SYNTHETIC"];
 const groups = [
   { id: "FOREX", icon: "€$", label: "Forex" },
   { id: "INDEX", icon: "▤", label: "Index" },
+  { id: "VOLATILITY", icon: "〽", label: "Volatility Indices" },
   { id: "CRYPTO", icon: "₿", label: "Crypto" },
   { id: "METAL", icon: "◆", label: "Metal" },
 ];
@@ -74,7 +75,7 @@ function Dashboard() {
           <button onClick={() => setScan({ section: "all", label: "all open markets", filter: () => true })} disabled={!markets.length} className="scan-btn scan-main">
             ⚡ SCAN ALL MARKETS
           </button>
-          <p className="mt-3 font-mono text-xs text-muted-foreground">Finds every strong signal across open pairs</p>
+          <p className="mt-3 font-mono text-xs text-muted-foreground">Finds confirmed signals across open markets · includes available Deriv Volatility Indices</p>
           <button
             onClick={() => setScan({ section: "btcusd", label: "BTCUSD", filter: (m) => m.symbol === "BTCUSD", single: true })}
             disabled={!btc}
@@ -84,7 +85,7 @@ function Dashboard() {
           </button>
         </section>
 
-        <section className="mt-10 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <section className="mt-10 grid grid-cols-2 gap-4 lg:grid-cols-5">
           {groups.map((g) => {
             const inGroup = markets.filter((m) => m.category === g.id);
             const open = inGroup.filter((m) => m.open).length;
@@ -95,9 +96,9 @@ function Dashboard() {
                   <span className="font-mono text-[10px] text-muted-foreground">{open}/{inGroup.length} OPEN</span>
                 </div>
                 <h3 className="mt-2 font-display text-lg font-bold uppercase">{g.label}</h3>
-                <p className="truncate font-mono text-[10px] text-muted-foreground">{inGroup.slice(0, 4).map((m) => m.symbol).join(" · ") || "—"}</p>
+                <p className="truncate font-mono text-[10px] text-muted-foreground">{inGroup.slice(0, 4).map((m) => m.category === "VOLATILITY" ? m.name : m.symbol).join(" · ") || "No symbols supplied by Deriv"}</p>
                 <button
-                  onClick={() => setScan({ section: g.id.toLowerCase(), label: `${g.label} pairs`, filter: (m) => m.category === g.id })}
+                  onClick={() => setScan({ section: g.id.toLowerCase(), label: `${g.label} markets`, filter: (m) => m.category === g.id })}
                   disabled={!inGroup.length}
                   className="scan-btn mt-4 text-xs"
                 >
