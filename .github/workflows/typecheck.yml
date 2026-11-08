@@ -1,0 +1,13 @@
+name: Typecheck index upgrade
+on:
+  pull_request:
+  push:
+    branches: [feature/index-quant-engine-2026]
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc --noEmit
