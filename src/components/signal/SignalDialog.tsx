@@ -24,9 +24,9 @@ const BATCH = 3;
 const lastChoice: { tf: Timeframe; strategy: StrategyFilter } = { tf: "H1", strategy: "all" };
 const readEnabled = (): IndexStrategyId[] => { try { const v = JSON.parse(localStorage.getItem("tradepulse-index-enabled-v1") || "null"); return Array.isArray(v) ? INDEX_STRATEGIES.filter(s => v.includes(s.id)).map(s => s.id) : INDEX_DEFAULT_ENABLED; } catch { return INDEX_DEFAULT_ENABLED; } };
 
-async function analyseMarket(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], signal: AbortSignal): Promise<Result> {
+async function analyseMarket(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], breakoutThreshold: number, signal: AbortSignal): Promise<Result> {
   try {
-    return await analyseMarketUnsafe(m, tf, strategy, indexStrategy, enabled, signal);
+    return await analyseMarketUnsafe(m, tf, strategy, indexStrategy, enabled, breakoutThreshold, signal);
   } catch (e) {
     if (isAbortError(e)) throw e;
     return { market: m, analysis: null, error: "Analysis failed for this market." };
@@ -45,7 +45,7 @@ async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: Stra
   const higher = await fetchCandles(m.derivSymbol, HIGHER_TF[tf], signal).catch((e) => { if (isAbortError(e)) throw e; return null; });
   const input = { candles, higher, timeframe: tf, open: m.open, decimals: m.decimals, strategy };
   let analysis = m.category === "INDEX"
-    ? analyzeIndex({ candles, higher, timeframe: tf, open: m.open, decimals: m.decimals, strategy: indexStrategy, enabled, now: Date.now() })
+    ? analyzeIndex({ candles, higher, timeframe: tf, open: m.open, decimals: m.decimals, strategy: indexStrategy, enabled, breakoutAtrThreshold: breakoutThreshold, now: Date.now() })
     : analyze({ ...input, now: Date.now() });
   // Only fetch the lower confirmation timeframe when there is a setup worth confirming.
   if (m.category !== "INDEX" && CONFIRM_TF[tf] !== tf && analysis.entry !== null) {
@@ -64,6 +64,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
   const [strategy, setStrategy] = useState<StrategyFilter>(lastChoice.strategy);
   const [indexStrategy, setIndexStrategy] = useState<IndexStrategySelection>("all");
   const [indexEnabled, setIndexEnabled] = useState<IndexStrategyId[]>(readEnabled);
+  const [breakoutThreshold, setBreakoutThreshold] = useState(0.25);
   const onlyIndex = markets.length > 0 && markets.every(m => m.category === "INDEX");
 
   useEffect(() => {
@@ -81,7 +82,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
         for (let i = 0; i < targets.length; i += BATCH) {
           const batch = targets.slice(i, i + BATCH);
           setCurrent(batch.map((m) => m.symbol).join(" · "));
-          found.push(...(await Promise.all(batch.map((m) => analyseMarket(m, tf, strategy, indexStrategy, indexEnabled, ctrl.signal)))));
+          found.push(...(await Promise.all(batch.map((m) => analyseMarket(m, tf, strategy, indexStrategy, indexEnabled, breakoutThreshold, ctrl.signal)))));
           setProgress(Math.round(((i + batch.length) / targets.length) * 100));
           await new Promise((r) => setTimeout(r, 0)); // keep the UI responsive between batches
         }
@@ -105,7 +106,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
       track(found.filter((r) => r.analysis && (r.analysis.action === "BUY" || r.analysis.action === "SELL")).length);
     })();
     return () => ctrl.abort(); // cancel queued requests when closed or settings change
-  }, [open, tf, strategy, indexStrategy, indexEnabled]);
+  }, [open, tf, strategy, indexStrategy, indexEnabled, breakoutThreshold]);
 
   const ranked = results.filter((r) => r.analysis).sort((a, b) => b.analysis!.score - a.analysis!.score);
   const strong = ranked.filter((r) => r.analysis!.action === "BUY" || r.analysis!.action === "SELL");
@@ -165,6 +166,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
                 {item.label}{item.experimental ? " (experimental)" : ""}
               </label>
             ))}</div>
+            <label className="mt-2 flex items-center gap-2 font-mono text-[11px]">ATR breakout threshold <input type="number" min="0.1" max="2" step="0.05" value={breakoutThreshold} onChange={e=>setBreakoutThreshold(Math.min(2,Math.max(0.1,Number(e.target.value)||0.25)))} className="w-20 rounded border border-border bg-background p-1"/> × ATR</label>
             <p className="mt-1 text-[10px] text-muted-foreground">Benchmark enabled by default; experimental strategies require opt-in. Index results use completed Deriv OHLC candles only.</p>
           </div>}
           {!done && (
