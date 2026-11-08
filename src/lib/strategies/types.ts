@@ -78,6 +78,7 @@ export type Analysis = {
   higherTimeframe: AnyTimeframe;
   confirmTimeframe: Timeframe;
   higherTrend: Trend;
+  marketRegime?: "TRENDING" | "RANGING" | "TRANSITION" | "UNKNOWN";
   marketOpen: boolean;
   /** Close time (ms) of the last COMPLETED candle used. */
   lastCandleTime: number | null;
