@@ -104,6 +104,18 @@ export type Database = {
         }
         Relationships: []
       }
+      scan_sessions: {
+        Row: { user_id: string; id: string; started_at: number; finished_at: number; timeframe: string; section: string; analysis_count: number; data_source: string; sample_type: string }
+        Insert: { user_id: string; id: string; started_at: number; finished_at: number; timeframe: string; section?: string; analysis_count?: number; data_source?: string; sample_type?: string }
+        Update: { user_id?: string; id?: string; started_at?: number; finished_at?: number; timeframe?: string; section?: string; analysis_count?: number; data_source?: string; sample_type?: string }
+        Relationships: []
+      }
+      scan_results: {
+        Row: { user_id: string; scan_id: string; deriv_symbol: string; symbol: string; category: string; timeframe: string; strategy: string | null; direction: string; candle_time: number | null; scanned_at: number; entry: number | null; stop_loss: number | null; tp1: number | null; tp2: number | null; indicator_snapshot: Json; market_regime: string | null; data_status: string; error_reason: string | null; opportunity_id: string | null; verified_outcome: string | null; resolved_at: number | null }
+        Insert: { user_id: string; scan_id: string; deriv_symbol: string; symbol: string; category: string; timeframe: string; strategy?: string | null; direction: string; candle_time?: number | null; scanned_at: number; entry?: number | null; stop_loss?: number | null; tp1?: number | null; tp2?: number | null; indicator_snapshot?: Json; market_regime?: string | null; data_status: string; error_reason?: string | null; opportunity_id?: string | null; verified_outcome?: string | null; resolved_at?: number | null }
+        Update: { user_id?: string; scan_id?: string; deriv_symbol?: string; symbol?: string; category?: string; timeframe?: string; strategy?: string | null; direction?: string; candle_time?: number | null; scanned_at?: number; entry?: number | null; stop_loss?: number | null; tp1?: number | null; tp2?: number | null; indicator_snapshot?: Json; market_regime?: string | null; data_status?: string; error_reason?: string | null; opportunity_id?: string | null; verified_outcome?: string | null; resolved_at?: number | null }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
