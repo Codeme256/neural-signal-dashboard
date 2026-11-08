@@ -24,7 +24,7 @@ async function authedRequest(method:string,path:string,body?:unknown):Promise<Re
   ...(body==null?{}:{body:JSON.stringify(body)}),
  });
  const json=await response.json().catch(()=>({})) as Record<string,unknown>;
- if(!response.ok)throw Error(typeof json.error==="string"?json.error:`Request failed (${response.status})`);
+ if(!response.ok)throw Error(typeof json['error']==="string"?json['error']:`Request failed (${response.status})`);
  return json;
 }
 export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
@@ -83,8 +83,8 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
  useEffect(()=>{
    let cancelled=false;
    void authedRequest("GET","/api/signal-alerts/telegram").then(x=>{
-     if(cancelled)return;setTelegramConfigured(x.configured===true);setTelegramEnabled(x.enabled===true);
-     if(typeof x.chatId==="string")setChatId(x.chatId);
+     if(cancelled)return;setTelegramConfigured(x['configured']===true);setTelegramEnabled(x['enabled']===true);
+     if(typeof x['chatId']==="string")setChatId(x['chatId']);
    }).catch(()=>{});
    return()=>{cancelled=true;};
  },[]);
@@ -110,7 +110,7 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
    setBusy(true);
    try{
      const out=await authedRequest("PUT","/api/signal-alerts/telegram",{botToken:token,chatId,enabled:true});
-     setTelegramConfigured(out.configured===true);setTelegramEnabled(out.enabled===true);setToken("");
+     setTelegramConfigured(out['configured']===true);setTelegramEnabled(out['enabled']===true);setToken("");
      toast.success("Telegram settings saved securely");
    }catch(e){toast.error("Telegram setup failed",{description:e instanceof Error?e.message:"Server unavailable"});}
    finally{setBusy(false);}
