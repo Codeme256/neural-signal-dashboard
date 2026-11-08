@@ -38,6 +38,7 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
  const [telegramConfigured,setTelegramConfigured]=useState(false);
  const [telegramEnabled,setTelegramEnabled]=useState(false);
  const [busy,setBusy]=useState(false);
+ const [telegramError,setTelegramError]=useState("");
  const cursor=useRef(0);
  const running=useRef(false);
  const marketsRef=useRef(markets);marketsRef.current=markets;
@@ -85,9 +86,12 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
    void authedRequest("GET","/api/signal-alerts/telegram").then(x=>{
      if(cancelled)return;setTelegramConfigured(x['configured']===true);setTelegramEnabled(x['enabled']===true);
      if(typeof x['chatId']==="string")setChatId(x['chatId']);
-   }).catch(()=>{});
+   }).catch((e:Error)=>setTelegramError(e.message));
    return()=>{cancelled=true;};
  },[]);
+ useEffect(()=>{
+   if(enabled&&markets.length>0){const ctrl=new AbortController();void run(ctrl.signal);return()=>ctrl.abort();}
+ },[enabled,markets.length,run]);
  useEffect(()=>{
    if(!enabled)return;
    const ctrl=new AbortController();
@@ -110,7 +114,7 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
    setBusy(true);
    try{
      const out=await authedRequest("PUT","/api/signal-alerts/telegram",{botToken:token,chatId,enabled:true});
-     setTelegramConfigured(out['configured']===true);setTelegramEnabled(out['enabled']===true);setToken("");
+     setTelegramConfigured(out['configured']===true);setTelegramEnabled(out['enabled']===true);setToken("");setTelegramError("");
      toast.success("Telegram settings saved securely");
    }catch(e){toast.error("Telegram setup failed",{description:e instanceof Error?e.message:"Server unavailable"});}
    finally{setBusy(false);}
@@ -148,6 +152,7 @@ export function SignalAlertCenter({markets}:{markets:DerivMarket[]}){
      <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={desktop} onChange={()=>void browser()}/> Enable browser pop-up notifications</label>
      <div className="space-y-2">
        <h3 className="font-display font-bold">Telegram channel alerts</h3>
+       {telegramError && <p role="alert" className="text-xs text-destructive">Telegram backend: {telegramError}</p>}
        <p className="text-xs text-muted-foreground">The bot must be an administrator of your channel with permission to post. Your bot token is sent to the authenticated server, encrypted at rest, and never returned to this browser.</p>
        <label className="block text-xs">Bot token (only when setting or replacing)
          <input type="password" autoComplete="off" value={token} onChange={e=>setToken(e.target.value)} placeholder={telegramConfigured?"Leave blank to keep existing token":"123456789:AA..."} className="mt-1 w-full rounded border border-border bg-background p-2 font-mono text-sm"/>
