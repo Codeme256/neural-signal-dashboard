@@ -33,7 +33,7 @@ async function analyseMarket(m: DerivMarket, tf: Timeframe, strategy: StrategyFi
   }
 }
 
-async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], signal: AbortSignal): Promise<Result> {
+async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], breakoutThreshold: number, signal: AbortSignal): Promise<Result> {
   let candles;
   try {
     candles = await fetchCandles(m.derivSymbol, tf, signal);
@@ -100,7 +100,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
         const a = r.analysis;
         if (a.lastCandleTime != null && a.entry != null && a.stopLoss != null && a.takeProfit1 != null && a.takeProfit2 != null) {
           const id = signalId(r.market.derivSymbol, tf, a.lastCandleTime, a.action);
-          if (!trackerStore.has(id)) void trackerStore.add({ id, derivSymbol: r.market.derivSymbol, symbol: r.market.symbol, decimals: r.market.decimals, action: a.action, timeframe: tf, strategy: a.strategy, score: a.score, entry: a.entry, stopLoss: a.stopLoss, takeProfit1: a.takeProfit1, takeProfit2: a.takeProfit2, signalTime: a.lastCandleTime }).catch(console.error);
+          if (!trackerStore.has(id)) void trackerStore.add({ id, derivSymbol: r.market.derivSymbol, symbol: r.market.symbol, decimals: r.market.decimals, action: a.action as "BUY" | "SELL", timeframe: tf, strategy: a.strategy, score: a.score, entry: a.entry, stopLoss: a.stopLoss, takeProfit1: a.takeProfit1, takeProfit2: a.takeProfit2, signalTime: a.lastCandleTime }).catch(console.error);
         }
       }
       track(found.filter((r) => r.analysis && (r.analysis.action === "BUY" || r.analysis.action === "SELL")).length);
