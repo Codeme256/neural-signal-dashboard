@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { getScanHistory, type ScanRecord } from "@/lib/index-scan-history";
 import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { UserMenu } from "@/components/auth/UserMenu";
 import { fetchCandlesRange } from "@/lib/candle-store";
@@ -55,6 +56,14 @@ function AnalysisPage() {
   useOutcomeChecker(list);
   const sum = summarize(list);
   const hasFinished = list.some(isFinal);
+  const [scanHistory, setScanHistory] = useState<ScanRecord[]>([]);
+  const [indexFilter, setIndexFilter] = useState("ALL");
+  useEffect(() => { const refresh=()=>setScanHistory(getScanHistory()); refresh();window.addEventListener("tradepulse-scan-recorded",refresh);return ()=>window.removeEventListener("tradepulse-scan-recorded",refresh); }, []);
+  const indexScans = scanHistory.filter(r=>r.category==="INDEX");
+  const visibleScans = indexFilter==="ALL" ? indexScans : indexScans.filter(r=>r.symbol===indexFilter);
+  const uniqueSessions = new Set(indexScans.map(r=>r.scanId)).size;
+  const actionCount = indexScans.filter(r=>r.action==="BUY"||r.action==="SELL").length;
+  const noTradeCount = indexScans.filter(r=>r.action==="WAIT"||r.action==="NO TRADE").length;
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-background">
@@ -84,6 +93,31 @@ function AnalysisPage() {
           Win rate = won ÷ (won + lost) of your tracked signals only{sum.expired ? ` · ${sum.expired} expired not counted` : ""}. A small number of results says little about future performance.
         </p>
 
+        <section className="mt-8 space-y-3 rounded-xl border border-border bg-card/60 p-4">
+          <h2 className="font-display text-lg font-bold">INDEX SCAN HISTORY</h2>
+          <p className="font-mono text-[11px] text-muted-foreground">Automatic scan audit stored in this browser only. These are analyses, NOT completed trading outcomes; results are not shared across devices yet. No assumed profits.</p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Stat label="Scan sessions" value={uniqueSessions}/>
+            <Stat label="Index analyses" value={indexScans.length}/>
+            <Stat label="BUY / SELL" value={actionCount}/>
+            <Stat label="WAIT / NO TRADE" value={noTradeCount}/>
+          </div>
+          <label className="block text-xs">Filter index
+            <select value={indexFilter} onChange={e=>setIndexFilter(e.target.value)} className="ml-2 rounded border border-border bg-background px-2 py-1">
+              <option value="ALL">All indices</option>
+              {[...new Set(indexScans.map(r=>r.symbol))].sort().map(x=><option key={x} value={x}>{x}</option>)}
+            </select>
+          </label>
+          <div className="max-h-80 space-y-2 overflow-y-auto">
+            {visibleScans.length===0?<p className="text-xs text-muted-foreground">No index scans saved on this browser yet.</p>:visibleScans.slice(0,100).map((r,i)=>(
+              <div key={r.scanId+"-"+r.derivSymbol+"-"+i} className="rounded border border-border p-2 font-mono text-[11px]">
+                <div className="flex flex-wrap items-center gap-2"><strong>{r.symbol}</strong><span>{r.timeframe}</span><span className="text-primary">{r.action}</span><span>{new Date(r.at).toLocaleString()}</span></div>
+                <p className="text-muted-foreground">{r.strategy??"No strategy"}{r.error?" · "+r.error:""}</p>
+                {r.entry!=null&&<p>Entry {r.entry} · SL {r.stopLoss} · TP1 {r.tp1} · TP2 {r.tp2}</p>}
+              </div>
+            ))}
+          </div>
+        </section>
         {list.length === 0 ? (
           <div className="mt-12 rounded-xl border border-border bg-card/60 p-8 text-center backdrop-blur">
             <p className="font-display text-lg font-bold">No tracked signals yet</p>
