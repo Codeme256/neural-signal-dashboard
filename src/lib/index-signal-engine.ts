@@ -43,9 +43,6 @@ function evaluate(id: IndexStrategyId, c: Ohlc[], atr: number, adx: number | nul
     if(setup){dir=setup.dir;stopRef=setup.stopRef;why=setup.confirmation;}
   }
   if(id==="macd"){
-    const higherClosed=input.higher?closedCandles(input.higher,htf,now):null;
- base.higherTrend=higherClosed&&!isStale(higherClosed,htf,now)?higherTrend(higherClosed):"NEUTRAL";
- base.marketRegime=ctx.adx==null?"UNKNOWN":ctx.adx>=25?"TRENDING":ctx.adx<20?"RANGING":"TRANSITION";
  const mac=MACD.calculate({values:closes,fastPeriod:12,slowPeriod:26,signalPeriod:9,SimpleMAOscillator:false,SimpleMASignal:false});
     const now=mac.at(-1),old=mac.at(-2), ema=e50.at(-1);
     checks.push(a("MACD 12/26/9",now?.MACD),a("MACD signal",now?.signal),a("MACD histogram",now?.histogram),a("EMA 50",ema));
@@ -134,10 +131,13 @@ export function analyzeIndex(input:IndexInput):Analysis{
  if(!ids.length)return reject("No enabled index strategies support this timeframe. Select another timeframe or enable one.");
  const ctx=buildContext(closed,5);
  if(!ctx)return reject("Index indicators unavailable; refusing to invent a signal.");
+ const higherClosed=input.higher?closedCandles(input.higher,htf,now):null;
+ base.higherTrend=higherClosed&&!isStale(higherClosed,htf,now)?higherTrend(higherClosed):"NEUTRAL";
+ base.marketRegime=ctx.adx==null?"UNKNOWN":ctx.adx>=25?"TRENDING":ctx.adx<20?"RANGING":"TRANSITION";
  const mac=MACD.calculate({values:closed.map(k=>k.close),fastPeriod:12,slowPeriod:26,signalPeriod:9,SimpleMAOscillator:false,SimpleMASignal:false}).at(-1);
  const bb=BollingerBands.calculate({period:20,stdDev:2,values:closed.map(k=>k.close)}).at(-1);
  const st=Stochastic.calculate({high:closed.map(k=>k.high),low:closed.map(k=>k.low),close:closed.map(k=>k.close),period:14,signalPeriod:3}).at(-1);
- const generic:Check[]=[check("MACD histogram",mac?.histogram!=null?`${fmt(mac.histogram)} · ${mac.histogram>0?"bullish":mac.histogram<0?"bearish":"neutral"}`:"n/a",mac?.histogram!=null?mac.histogram>0:null),check("Bollinger 20/2",bb?`${fmt(bb.lower)} / ${fmt(bb.middle)} / ${fmt(bb.upper)} · ${ctx.last.close>bb.upper?"above upper":ctx.last.close<bb.lower?"below lower":"inside bands"}`:"n/a",bb?true:null),check("Stochastic 14/3",st?`K ${fmt(st.k,1)} / D ${fmt(st.d,1)} · ${st.k>80?"overbought":st.k<20?"oversold":st.k>st.d?"bullish crossover context":"bearish crossover context"}`:"n/a",st?true:null),check("ATR 14",fmt(ctx.atr),true),check("Data source","Deriv OHLC · completed candles · price-only (no exchange volume)",true),check("Market regime",base.marketRegime,base.marketRegime!=="UNKNOWN"),check("Higher timeframe",`${htf} ${base.higherTrend}`,base.higherTrend!=="NEUTRAL"),check("Last completed candle",stamp?new Date(stamp).toISOString():"none",stamp!=null)];
+ const generic:Check[]=[check("MACD histogram",mac?.histogram!=null?`${fmt(mac.histogram)} · ${mac.histogram>0?"bullish":mac.histogram<0?"bearish":"neutral"}`:"n/a",mac?.histogram!=null?mac.histogram>0:null),check("Bollinger 20/2",bb?`${fmt(bb.lower)} / ${fmt(bb.middle)} / ${fmt(bb.upper)} · ${ctx.last.close>bb.upper?"above upper":ctx.last.close<bb.lower?"below lower":"inside bands"}`:"n/a",bb?true:null),check("Stochastic 14/3",st?`K ${fmt(st.k,1)} / D ${fmt(st.d,1)} · ${st.k>80?"overbought":st.k<20?"oversold":st.k>st.d?"bullish crossover context":"bearish crossover context"}`:"n/a",st?true:null),check("ATR 14",fmt(ctx.atr),true),check("Data source","Deriv OHLC · completed candles · price-only (no exchange volume)",true),check("Market regime",base.marketRegime??"UNKNOWN",base.marketRegime!=="UNKNOWN"),check("Higher timeframe",`${htf} ${base.higherTrend}`,base.higherTrend!=="NEUTRAL"),check("Last completed candle",stamp?new Date(stamp).toISOString():"none",stamp!=null)];
  const evaluations=ids.map(s=>({s,...evaluate(s.id,closed,ctx.atr,ctx.adx,input.breakoutAtrThreshold??0.25)}));
  base.strategies=evaluations.map(({s,finding,checks})=>({id:s.id,name:s.label,dir:finding?.dir??null,score:finding?100:null,action:finding?(finding.dir===1?"BUY":"SELL"):"NO TRADE",note:finding?.why ?? (checks.filter(c=>c.ok===false).map(c=>c.label).join(", ") || "No confirmation")}));
  const valid=evaluations.filter((v):v is typeof v & {finding:Finding}=>v.finding!==null);
