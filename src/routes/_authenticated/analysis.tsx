@@ -58,7 +58,7 @@ function AnalysisPage() {
   const hasFinished = list.some(isFinal);
   const [scanHistory, setScanHistory] = useState<ScanRecord[]>([]);
   const [indexFilter, setIndexFilter] = useState("ALL");
-  useEffect(() => { const refresh=()=>setScanHistory(getScanHistory()); refresh();window.addEventListener("tradepulse-scan-recorded",refresh);return ()=>window.removeEventListener("tradepulse-scan-recorded",refresh); }, []);
+  useEffect(() => { const refresh=()=>{ void getScanHistory().then(setScanHistory); }; refresh();window.addEventListener("tradepulse-scan-recorded",refresh);return ()=>window.removeEventListener("tradepulse-scan-recorded",refresh); }, []);
   const indexScans = scanHistory.filter(r=>r.category==="INDEX");
   const visibleScans = indexFilter==="ALL" ? indexScans : indexScans.filter(r=>r.symbol===indexFilter);
   const uniqueSessions = new Set(indexScans.map(r=>r.scanId)).size;
