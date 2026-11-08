@@ -65,7 +65,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
   const [indexStrategy, setIndexStrategy] = useState<IndexStrategySelection>("all");
   const [indexEnabled, setIndexEnabled] = useState<IndexStrategyId[]>(readEnabled);
   const [breakoutThreshold, setBreakoutThreshold] = useState(0.25);
-  const onlyIndex = markets.length > 0 && markets.every(m => m.category === "INDEX");
+  const onlyIndex = section === "index" || (markets.length > 0 && markets.every(m => m.category === "INDEX"));
 
   useEffect(() => {
     if (!open) return;
@@ -74,7 +74,9 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
     setProgress(0); setResults([]); setDone(false);
     const started = performance.now();
     (async () => {
-      const targets = single ? markets : markets.filter((m) => m.open);
+      // For index scans, include weekend-closed instruments as NO TRADE analyses instead of reporting 0 scans.
+      // All other asset classes preserve the prior open-market-only behavior.
+      const targets = single || onlyIndex ? markets : markets.filter((m) => m.open);
       const track = (found: number) => window.__lovableEvents?.track?.("project.market_scan_completed", { section, pairs_scanned: targets.length, signals_found: found, has_results: found > 0, timeframe: tf });
       if (!targets.length) { setDone(true); track(0); return; }
       const found: Result[] = [];
@@ -112,11 +114,16 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
   const strong = ranked.filter((r) => r.analysis!.action === "BUY" || r.analysis!.action === "SELL");
   const watch = ranked.filter((r) => r.analysis!.action === "WAIT");
   const unavailable = results.filter((r) => r.error);
+  const noTrade = results.filter((r) => r.analysis?.action === "NO TRADE");
+  const closed = results.filter(r => !r.market.open);
+  const totalIndex = onlyIndex ? markets.length : 0;
   const one = single ? results[0] : undefined;
   const strategyLabel = onlyIndex ? (INDEX_STRATEGIES.find(s => s.id === indexStrategy)?.label ?? "Enabled Index Strategies") : (STRATEGIES.find((s) => s.id === strategy)?.label ?? "All Strategies");
 
   const title = !done ? "NEURAL SCAN RUNNING"
     : single ? `${markets[0]?.symbol ?? ""} · ${one?.analysis?.action ?? "UNAVAILABLE"}`
+    : onlyIndex && markets.length === 0 ? "INDEX FEED UNAVAILABLE"
+    : onlyIndex && markets.every(m=>!m.open) ? "INDEX MARKETS CLOSED"
     : `${strong.length} STRONG SIGNAL${strong.length === 1 ? "" : "S"}`;
 
   return (
@@ -173,7 +180,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
             <div className="py-2 font-mono text-sm text-primary">
               <NeuralScan
                 progress={progress}
-                symbols={(single ? markets : markets.filter((m) => m.open)).map((m) => m.symbol)}
+                symbols={(single || onlyIndex ? markets : markets.filter((m) => m.open)).map((m) => m.symbol)}
                 active={current.split(" · ")}
                 className="mb-3 h-52 w-full"
               />
@@ -188,8 +195,36 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
 
           {done && !single && (
             <div className="space-y-3">
-              {strong.length === 0 && <p className="py-6 text-center text-muted-foreground">No strong signals on {tf} right now. The engine only signals confirmed setups — try another timeframe or scan again later.</p>}
+              {onlyIndex && markets.length === 0 && (
+                <div role="status" className="rounded-lg border border-warn/40 bg-background/60 p-4 text-sm text-muted-foreground">
+                  <p className="font-display text-base font-semibold text-foreground">No Deriv stock-index symbols returned</p>
+                  <p className="mt-2">The connected public Deriv symbols feed has not supplied any stock indices. No signal can be calculated without a real market-data feed. This is a feed-availability problem, not confirmation that all six strategies failed.</p>
+                </div>
+              )}
+              {onlyIndex && closed.length > 0 && (
+                <div role="status" className="rounded-lg border border-border bg-background/60 p-3 text-xs text-muted-foreground">
+                  <p className="font-semibold text-foreground">{closed.length} index market{closed.length===1?" is":"s are"} closed</p>
+                  <p className="mt-1">Stock indices normally close on weekends. Last completed candles, if available, are for reference only; no live BUY or SELL signals are issued while the market is closed.</p>
+                </div>
+              )}
+              {strong.length === 0 && !onlyIndex && <p className="py-6 text-center text-muted-foreground">No strong signals on {tf} right now. The engine only signals confirmed setups — try another timeframe or scan again later.</p>}
+              {strong.length === 0 && onlyIndex && markets.some(m=>m.open) && <p className="py-2 text-center text-muted-foreground">No fully confirmed index signals on {tf}. See NO TRADE / WAIT results below for the specific reason.</p>}
               {strong.map((r) => <SignalCard key={r.market.derivSymbol} market={r.market} analysis={r.analysis!} />)}
+              {onlyIndex && [...noTrade,...results.filter(r=>r.analysis?.action==="WAIT")].map(r=>(
+                <div key={r.market.derivSymbol} className="rounded-lg border border-border bg-background/40 p-3 font-mono text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-display text-base font-semibold">{r.market.name}</span>
+                    <span className="text-warn">{r.analysis?.action} · {r.market.open?"OPEN":"CLOSED"}</span>
+                  </div>
+                  <p className="mt-1 text-muted-foreground">{r.analysis?.reasons.join(" · ") || "No confirmed setup"}</p>
+                  {r.analysis?.lastCandleTime && <p className="mt-1 text-muted-foreground">Last completed candle: {new Date(r.analysis.lastCandleTime).toLocaleString()}</p>}
+                </div>
+              ))}
+              {onlyIndex && unavailable.map(r=>(
+                <div key={r.market.derivSymbol} className="rounded-lg border border-border bg-background/40 p-3 font-mono text-xs">
+                  <strong>{r.market.name}</strong><p className="mt-1 text-muted-foreground">DATA UNAVAILABLE · {r.error}</p>
+                </div>
+              ))}
               {watch.length > 0 && (
                 <div className="pt-2">
                   <div className="mb-2 font-mono text-[10px] tracking-widest text-muted-foreground">WATCHLIST · CONFLUENCE 50–69</div>
@@ -205,7 +240,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
                 </div>
               )}
               <p className="text-[11px] text-muted-foreground">
-                Scanned {results.length} open market{results.length === 1 ? "" : "s"}{unavailable.length ? ` · ${unavailable.length} unavailable` : ""}. Scores are confluence points, not win probabilities. Technical indication from live Deriv data — not financial advice.
+                {onlyIndex ? `Checked ${results.length}/${totalIndex} index markets · ${closed.length} closed · ${unavailable.length} data unavailable` : `Scanned ${results.length} open market${results.length === 1 ? "" : "s"}${unavailable.length ? ` · ${unavailable.length} unavailable` : ""}`}. Scores are confluence points, not win probabilities. Technical indication from live Deriv data — not financial advice.
               </p>
             </div>
           )}
