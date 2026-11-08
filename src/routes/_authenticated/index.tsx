@@ -4,6 +4,7 @@ import { useDerivMarkets, useDerivQuotes } from "@/hooks/use-deriv";
 import { derivQuoteStatus, formatMarketPrice, type DerivMarket } from "@/lib/deriv-data";
 import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { ScanDialog } from "@/components/signal/SignalDialog";
+import { SignalAlertCenter } from "@/components/signal/SignalAlertCenter";
 import { UserMenu } from "@/components/auth/UserMenu";
 
 export const Route = createFileRoute("/_authenticated/")({
@@ -84,6 +85,8 @@ function Dashboard() {
             ₿ SCAN BTCUSD {btc ? `· ${formatMarketPrice(quotes.get("BTCUSD")?.price, btc)}` : ""}
           </button>
         </section>
+
+        <SignalAlertCenter markets={markets} />
 
         <section className="mt-10 grid grid-cols-2 gap-4 lg:grid-cols-5">
           {groups.map((g) => {
