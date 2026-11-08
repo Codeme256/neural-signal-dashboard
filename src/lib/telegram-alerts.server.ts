@@ -1,43 +1,52 @@
-/** Shared TradePulse bot. Single token in Cloudflare secrets, per-user Telegram subscriptions.
- * No user-supplied bot tokens or self-asserted chat IDs are accepted.
+/** Shared Telegram alerts backed by Cloudflare D1; authentication remains on existing Supabase.
+ * Only private TradePulse accounts can link and send. No client-supplied bot tokens.
  */
 import { createClient } from "@supabase/supabase-js";
 
+type D1Statement={
+ bind:(...params:(string|number|null)[])=>D1Statement;
+ first:<T=Record<string,unknown>>()=>Promise<T|null>;
+ run:()=>Promise<{success:boolean;meta?:{changes?:number}}>;
+};
+type D1Db={prepare:(query:string)=>D1Statement};
 type Env={
- SUPABASE_URL?:string;SUPABASE_SERVICE_ROLE_KEY?:string;
+ TRADEPULSE_DB?:D1Db;
+ SUPABASE_URL?:string;SUPABASE_SERVICE_ROLE_KEY?:string;SUPABASE_PUBLISHABLE_KEY?:string;
  TRADEPULSE_TELEGRAM_BOT_TOKEN?:string;TELEGRAM_WEBHOOK_SECRET?:string;
 };
-type Subscription={user_id:string;telegram_chat_id:string;telegram_user_id:string;enabled:boolean};
+type Sub={user_id:string;telegram_chat_id:string;telegram_user_id:string;enabled:number};
+type LinkRow={user_id:string;expires_at:string};
 const json=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{"Content-Type":"application/json","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}});
-const safeError=(message:string,status=400)=>json({error:message},status);
-const validToken=(v:unknown):v is string=>typeof v==="string"&&/^\d{5,15}:[A-Za-z0-9_-]{25,}$/.test(v);
-const adminClient=(env:Env)=>{
- if(!env.SUPABASE_URL||!env.SUPABASE_SERVICE_ROLE_KEY)throw Error("Supabase server secrets are not configured");
- return createClient(env.SUPABASE_URL,env.SUPABASE_SERVICE_ROLE_KEY,{auth:{autoRefreshToken:false,persistSession:false}});
-};
-const tokenFor=(env:Env)=>{
- if(!validToken(env.TRADEPULSE_TELEGRAM_BOT_TOKEN))throw Error("Shared Telegram bot secret is not configured");
- return env.TRADEPULSE_TELEGRAM_BOT_TOKEN;
-};
+const fail=(message:string,status=400)=>json({error:message},status);
+const tokenValid=(s:unknown):s is string=>typeof s==="string"&&/^\d{5,15}:[A-Za-z0-9_-]{25,}$/.test(s);
+const bot=(env:Env)=>{if(!tokenValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN))throw Error("Shared bot token missing from Cloudflare secrets");return env.TRADEPULSE_TELEGRAM_BOT_TOKEN;};
+const db=(env:Env)=>{if(!env.TRADEPULSE_DB)throw Error("Bind D1 database as TRADEPULSE_DB in Cloudflare Worker settings");return env.TRADEPULSE_DB;};
 async function telegram(token:string,method:string,body:Record<string,unknown>){
- const res=await fetch(`https://api.telegram.org/bot${token}/${method}`,{
-  method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body),
- });
- const result=await res.json().catch(()=>({})) as {ok?:boolean;description?:string;result?:{username?:string}};
- if(!res.ok||!result.ok)throw Error("Telegram API request failed. Verify bot permissions and connection.");
+ const res=await fetch(`https://api.telegram.org/bot${token}/${method}`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+ const result=await res.json().catch(()=>({})) as {ok?:boolean;result?:{username?:string}};
+ if(!res.ok||!result.ok)throw Error("Telegram request failed; confirm bot token, permissions and delivery");
  return result.result;
 }
-async function readBody(request:Request){
- const s=await request.text();if(s.length>6000)throw Error("Request too large");
- const parsed:unknown=JSON.parse(s);
- if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))throw Error("Invalid body");
- return parsed as Record<string,unknown>;
+async function bodyObject(request:Request){
+ const value=await request.text();if(value.length>6000)throw Error("Request too large");
+ const result:unknown=JSON.parse(value);
+ if(!result||typeof result!=="object"||Array.isArray(result))throw Error("Invalid JSON");
+ return result as Record<string,unknown>;
 }
-const codeHash=async(code:string)=>{
- const b=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(code));
- return Array.from(new Uint8Array(b),v=>v.toString(16).padStart(2,"0")).join("");
+const linkCode=()=>Array.from(crypto.getRandomValues(new Uint8Array(24)),v=>v.toString(16).padStart(2,"0")).join("");
+const hashCode=async(code:string)=>{
+ const h=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(code));
+ return Array.from(new Uint8Array(h),x=>x.toString(16).padStart(2,"0")).join("");
 };
-const newCode=()=>Array.from(crypto.getRandomValues(new Uint8Array(24)),v=>v.toString(16).padStart(2,"0")).join("");
+async function authenticatedUser(request:Request,env:Env):Promise<string|null>{
+ const bearer=request.headers.get("Authorization");
+ if(!bearer?.startsWith("Bearer ")||bearer.length>3000)return null;
+ const key=env.SUPABASE_SERVICE_ROLE_KEY||env.SUPABASE_PUBLISHABLE_KEY;
+ if(!env.SUPABASE_URL||!key)throw Error("Supabase authentication server secrets are missing");
+ const client=createClient(env.SUPABASE_URL,key,{auth:{persistSession:false,autoRefreshToken:false}});
+ const {data:{user},error}=await client.auth.getUser(bearer.slice(7));
+ return error?null:user?.id??null;
+}
 type ValidAlert={id:string;symbol:string;strategy:string;category:string;direction:"BUY"|"SELL";timeframe:string;entry:number;stop:number;tp1:number;tp2:number;rr:number;candleTime:number};
 function parseAlert(a:unknown):ValidAlert|null{
  if(!a||typeof a!=="object"||Array.isArray(a))return null;
@@ -54,92 +63,79 @@ function parseAlert(a:unknown):ValidAlert|null{
  !(direction==="BUY"?stop<entry&&tp1>entry&&tp2>=tp1:stop>entry&&tp1<entry&&tp2<=tp1))return null;
  return {id,symbol,strategy,category,direction,timeframe:tf,entry,stop,tp1,tp2,rr,candleTime};
 }
-export async function handleTelegramApi(request:Request,unknownEnv:unknown):Promise<Response>{
- const env=(unknownEnv&&typeof unknownEnv==="object"?unknownEnv:{}) as Env;
+
+export async function handleTelegramApi(request:Request,rawEnv:unknown):Promise<Response>{
+ const env=(rawEnv&&typeof rawEnv==="object"?rawEnv:{}) as Env;
  try{
   const url=new URL(request.url),path=url.pathname;
-  if(!path.startsWith("/api/signal-alerts/telegram"))return safeError("Not found",404);
-  // Telegram's webhook is the only public endpoint; authenticity is its secret header.
+  if(!path.startsWith("/api/signal-alerts/telegram"))return fail("Not found",404);
   if(path==="/api/signal-alerts/telegram/webhook"){
-   if(request.method!=="POST")return safeError("Method not allowed",405);
-   if(!env.TELEGRAM_WEBHOOK_SECRET||request.headers.get("X-Telegram-Bot-Api-Secret-Token")!==env.TELEGRAM_WEBHOOK_SECRET)
-    return safeError("Unauthorized Telegram webhook",401);
-   const b=await readBody(request);
-   const msg=(b["message"]??{}) as Record<string,unknown>;
+   if(request.method!=="POST")return fail("Unsupported method",405);
+   if(!env.TELEGRAM_WEBHOOK_SECRET||request.headers.get("X-Telegram-Bot-Api-Secret-Token")!==env.TELEGRAM_WEBHOOK_SECRET)return fail("Unauthorized webhook",401);
+   const payload=await bodyObject(request);
+   const msg=(payload["message"]??{}) as Record<string,unknown>;
    const chat=(msg["chat"]??{}) as Record<string,unknown>;
    const from=(msg["from"]??{}) as Record<string,unknown>;
-   const message=msg["text"];
-   if(chat["type"]!=="private"||typeof message!=="string"||!/^\/start\s+[0-9a-f]{48}$/.test(message))return json({ok:true});
-   const code=message.split(/\s+/)[1]!;
-   const admin=adminClient(env);
-   const hash=await codeHash(code);
-   const {data:link,error:linkError}=await admin.from("telegram_link_codes").select("*").eq("code_hash",hash).maybeSingle();
-   if(linkError||!link||Date.parse(String(link.expires_at))<Date.now())return json({ok:true});
-   const chatId=String(chat["id"]??""),userId=String(from["id"]??"");
-   if(!/^\d{2,20}$/.test(chatId)||!/^\d{2,20}$/.test(userId))return json({ok:true});
-   // A linked Telegram identity must not be claimable by other TradePulse accounts.
-   const {data:linked}=await admin.from("telegram_subscriptions").select("user_id").eq("telegram_user_id",userId).maybeSingle();
-   if(linked&&linked.user_id!==link.user_id)return json({ok:true});
-   const {error}=await admin.from("telegram_subscriptions").upsert({
-    user_id:link.user_id,telegram_chat_id:chatId,telegram_user_id:userId,enabled:true,linked_at:new Date().toISOString(),
-   },{onConflict:"user_id"});
-   if(error)return json({ok:true});
-   await admin.from("telegram_link_codes").delete().eq("user_id",link.user_id);
-   // Best effort welcome; a delivery failure must not leak server details to Telegram.
-   await telegram(tokenFor(env),"sendMessage",{chat_id:chatId,text:"✅ TradePulse linked! You will receive alerts when your TradePulse monitor detects a new strong signal. No trading orders are placed."}).catch(()=>{});
+   const text=msg["text"];
+   if(chat["type"]!=="private"||typeof text!=="string"||!/^\/start\s+[0-9a-f]{48}$/.test(text))return json({ok:true});
+   const hash=await hashCode(text.split(/\s+/)[1]!);
+   const link=await db(env).prepare("SELECT user_id,expires_at FROM telegram_link_codes WHERE code_hash=?").bind(hash).first<LinkRow>();
+   if(!link||Date.parse(link.expires_at)<=Date.now())return json({ok:true});
+   const user=String(from["id"]??""),chatId=String(chat["id"]??"");
+   if(!/^\d{2,20}$/.test(user)||!/^\d{2,20}$/.test(chatId)||user!==chatId)return json({ok:true});
+   const existing=await db(env).prepare("SELECT user_id FROM telegram_subscriptions WHERE telegram_user_id=?").bind(user).first<{user_id:string}>();
+   if(existing&&existing.user_id!==link.user_id)return json({ok:true});
+   try{
+    await db(env).prepare("INSERT INTO telegram_subscriptions (user_id,telegram_chat_id,telegram_user_id,enabled,linked_at) VALUES (?,?,?,1,?) ON CONFLICT(user_id) DO UPDATE SET telegram_chat_id=excluded.telegram_chat_id,telegram_user_id=excluded.telegram_user_id,enabled=1,linked_at=excluded.linked_at")
+       .bind(link.user_id,chatId,user,new Date().toISOString()).run();
+   }catch{return json({ok:true});}
+   await db(env).prepare("DELETE FROM telegram_link_codes WHERE user_id=?").bind(link.user_id).run();
+   await telegram(bot(env),"sendMessage",{chat_id:chatId,text:"✅ TradePulse connected. Signal alerts will arrive here when your dashboard monitor detects a strong setup."}).catch(()=>{});
    return json({ok:true});
   }
   const origin=request.headers.get("Origin");
-  if(origin&&origin!==url.origin)return safeError("Cross-origin request rejected",403);
-  const bearer=request.headers.get("Authorization");
-  if(!bearer?.startsWith("Bearer ")||bearer.length>3000)return safeError("Sign in to TradePulse",401);
-  const admin=adminClient(env);
-  const {data:{user},error}=await admin.auth.getUser(bearer.slice(7));
-  if(error||!user)return safeError("Session expired. Sign in again.",401);
-  const uid=user.id;
-  const {data:row,error:readError}=await admin.from("telegram_subscriptions").select("*").eq("user_id",uid).maybeSingle();
-  if(readError)throw Error("Apply the shared Telegram subscriptions database migration");
-  const sub=row as Subscription|null;
+  if(origin&&origin!==url.origin)return fail("Cross-origin request rejected",403);
+  const uid=await authenticatedUser(request,env);
+  if(!uid)return fail("Sign in again",401);
+  const d=db(env);
+  const sub=await d.prepare("SELECT user_id,telegram_chat_id,telegram_user_id,enabled FROM telegram_subscriptions WHERE user_id=?").bind(uid).first<Sub>();
   if(path==="/api/signal-alerts/telegram"&&request.method==="GET")
-   return json({configured:!!sub,enabled:sub?.enabled??false,botAvailable:validToken(env.TRADEPULSE_TELEGRAM_BOT_TOKEN)});
+   return json({configured:!!sub,enabled:sub?.enabled===1,botAvailable:tokenValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN)});
   if(path==="/api/signal-alerts/telegram"&&request.method==="DELETE"){
-   const {error:removeError}=await admin.from("telegram_subscriptions").delete().eq("user_id",uid);
-   await admin.from("telegram_link_codes").delete().eq("user_id",uid);
-   if(removeError)throw Error("Could not disconnect Telegram");
+   await d.prepare("DELETE FROM telegram_subscriptions WHERE user_id=?").bind(uid).run();
+   await d.prepare("DELETE FROM telegram_link_codes WHERE user_id=?").bind(uid).run();
    return json({configured:false,enabled:false});
   }
   if(path==="/api/signal-alerts/telegram/connect"&&request.method==="POST"){
-   const token=tokenFor(env);
-   const info=await telegram(token,"getMe",{});
-   const username=info?.username;
-   if(!username||!/^[A-Za-z0-9_]{5,32}$/.test(username))throw Error("Telegram bot username is unavailable");
-   const code=newCode(),hash=await codeHash(code),expires=new Date(Date.now()+10*60*1000).toISOString();
-   const {error:saveError}=await admin.from("telegram_link_codes").upsert({user_id:uid,code_hash:hash,expires_at:expires,created_at:new Date().toISOString()},{onConflict:"user_id"});
-   if(saveError)throw Error("Could not create private Telegram connection link");
-   return json({url:`https://t.me/${username}?start=${code}`,expiresAt:expires});
+   const result=await telegram(bot(env),"getMe",{}),username=result?.username;
+   if(!username||!/^[A-Za-z0-9_]{5,32}$/.test(username))throw Error("Bot username unavailable");
+   const code=linkCode(),hash=await hashCode(code),expiresAt=new Date(Date.now()+10*60*1000).toISOString();
+   await d.prepare("INSERT INTO telegram_link_codes (user_id,code_hash,expires_at,created_at) VALUES (?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET code_hash=excluded.code_hash,expires_at=excluded.expires_at,created_at=excluded.created_at")
+      .bind(uid,hash,expiresAt,new Date().toISOString()).run();
+   return json({url:`https://t.me/${username}?start=${code}`,expiresAt});
   }
   if(path==="/api/signal-alerts/telegram/test"&&request.method==="POST"){
-   if(!sub?.enabled)return safeError("Link Telegram first",400);
-   await telegram(tokenFor(env),"sendMessage",{chat_id:sub.telegram_chat_id,text:"✅ TradePulse test notification. Your account is connected to the shared bot."});
+   if(!sub||sub.enabled!==1)return fail("Connect Telegram first",400);
+   await telegram(bot(env),"sendMessage",{chat_id:sub.telegram_chat_id,text:"✅ TradePulse test notification. Your Telegram account is connected."});
    return json({sent:true});
   }
   if(path==="/api/signal-alerts/telegram/send"&&request.method==="POST"){
-   if(!sub?.enabled)return safeError("Telegram is not linked",400);
-   const b=await readBody(request),a=parseAlert(b["alert"]);
-   if(!a)return safeError("Invalid or expired signal",400);
-   const {data:prior}=await admin.from("telegram_alert_delivery").select("signal_id").eq("user_id",uid).eq("signal_id",a.id).maybeSingle();
-   if(prior)return json({sent:false,duplicate:true});
-   const {count}=await admin.from("telegram_alert_delivery").select("signal_id",{count:"exact",head:true}).eq("user_id",uid).gte("sent_at",new Date(Date.now()-60000).toISOString());
-   if((count??0)>=3)return safeError("Telegram delivery rate limited",429);
-   const {error:reserved}=await admin.from("telegram_alert_delivery").insert({user_id:uid,signal_id:a.id});
-   if(reserved)return json({sent:false,duplicate:true});
-   const text=`TradePulse ${a.direction} · ${a.symbol}\nStrategy: ${a.strategy}\n${a.category} · ${a.timeframe}\nEntry: ${a.entry}\nSL: ${a.stop}\nTP1: ${a.tp1}\nTP2: ${a.tp2}\nRisk/reward: 1:${a.rr}\nCandle: ${new Date(a.candleTime).toISOString()}\n\nUnverified browser-generated analysis, not a trade.`;
-   try{await telegram(tokenFor(env),"sendMessage",{chat_id:sub.telegram_chat_id,text});}
-   catch(e){await admin.from("telegram_alert_delivery").delete().eq("user_id",uid).eq("signal_id",a.id);throw e;}
+   if(!sub||sub.enabled!==1)return fail("Connect Telegram first",400);
+   const body=await bodyObject(request),a=parseAlert(body["alert"]);
+   if(!a)return fail("Invalid or expired signal",400);
+   const recent=await d.prepare("SELECT COUNT(*) AS count FROM telegram_alert_delivery WHERE user_id=? AND sent_at>=?").bind(uid,new Date(Date.now()-60000).toISOString()).first<{count:number}>();
+   if((recent?.count??0)>=3)return fail("Telegram alerts rate limited",429);
+   const reserved=await d.prepare("INSERT OR IGNORE INTO telegram_alert_delivery (user_id,signal_id,sent_at) VALUES (?,?,?)")
+      .bind(uid,a.id,new Date().toISOString()).run();
+   if((reserved.meta?.changes??0)===0)return json({sent:false,duplicate:true});
+   const message=`TradePulse ${a.direction} · ${a.symbol}\nStrategy: ${a.strategy}\n${a.category} · ${a.timeframe}\nEntry: ${a.entry}\nSL: ${a.stop}\nTP1: ${a.tp1}\nTP2: ${a.tp2}\nRisk/reward: 1:${a.rr}\nCandle: ${new Date(a.candleTime).toISOString()}\n\nBrowser-generated technical signal. No trade is executed or guaranteed.`;
+   try{await telegram(bot(env),"sendMessage",{chat_id:sub.telegram_chat_id,text:message});}
+   catch(e){await d.prepare("DELETE FROM telegram_alert_delivery WHERE user_id=? AND signal_id=?").bind(uid,a.id).run();throw e;}
    return json({sent:true});
   }
-  return safeError("Unsupported method",405);
+  return fail("Unsupported method",405);
  }catch(e){
-  return safeError(e instanceof Error?e.message:"Telegram is not yet configured",503);
+  // Do not log request bodies or any secret values.
+  return fail(e instanceof Error?e.message:"Telegram service unavailable",503);
  }
 }
