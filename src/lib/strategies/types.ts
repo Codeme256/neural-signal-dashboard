@@ -60,7 +60,7 @@ export type Grade = "HIGH CONFLUENCE" | "STRONG SETUP" | "MODERATE — WATCHLIST
 export type Check = { label: string; value: string; ok: boolean | null };
 
 export type StrategyResult = {
-  id: StrategyId;
+  id: string;
   name: string;
   dir: Dir | null;
   score: number | null;
@@ -81,6 +81,8 @@ export type Analysis = {
   marketOpen: boolean;
   /** Close time (ms) of the last COMPLETED candle used. */
   lastCandleTime: number | null;
+  /** Timestamp when a generated setup must be re-evaluated; index signals expire at next candle close. */
+  expiresAt?: number | null;
   entry: number | null;
   entryZone: [number, number] | null;
   stopLoss: number | null;
