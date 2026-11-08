@@ -16,4 +16,5 @@ jobs:
           node-version: '22'
       - run: npm install --legacy-peer-deps --no-audit --no-fund
       - run: npm test
+      - run: node --test telegram-service/worker.test.mjs
       - run: npm run build
