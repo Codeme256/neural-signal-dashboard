@@ -69,9 +69,14 @@ export async function storeScanSession(records:ScanRecord[]){
      data_status:r.dataStatus??(r.action==="UNAVAILABLE"?"UNAVAILABLE":"FRESH"),
      error_reason:r.error,opportunity_id:opportunityId(r),
    }));
-   const {error:writeError}=await supabase.from("scan_results").insert(values);
-   // A repeated opportunity may violate the unique signal key. It remains in the scan session
-   // but is intentionally not counted as another independent actionable signal.
-   if(writeError&&writeError.code!=="23505")console.warn("Cloud scan analysis storage unavailable",writeError.message);
+   // Skip previously saved candle opportunities, retaining each distinct scan-session header.
+   const {data:prior}=await supabase.from("scan_results").select("opportunity_id").eq("user_id",user.id).not("opportunity_id","is",null).limit(2000);
+   const existing=new Set((prior??[]).map(r=>r.opportunity_id).filter((x):x is string=>x!=null));
+   const fresh=values.filter(v=>!v.opportunity_id||!existing.has(v.opportunity_id));
+   if(fresh.length){
+     const {error:writeError}=await supabase.from("scan_results").insert(fresh);
+     // 23505 = another concurrent scan stored this candle/strategy first.
+     if(writeError&&writeError.code!=="23505")console.warn("Cloud scan analysis storage unavailable",writeError.message);
+   }
  }catch(e){console.warn("Cloud scan storage is not configured",e);}
 }
