@@ -1,6 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { getScanHistory, type ScanRecord } from "@/lib/index-scan-history";
+import { INDEX_STRATEGIES } from "@/lib/index-signal-engine";
+import { outcomeMetrics } from "@/lib/index-performance";
 import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { UserMenu } from "@/components/auth/UserMenu";
 import { fetchCandlesRange } from "@/lib/candle-store";
@@ -64,6 +66,14 @@ function AnalysisPage() {
   const uniqueSessions = new Set(indexScans.map(r=>r.scanId)).size;
   const actionCount = indexScans.filter(r=>r.action==="BUY"||r.action==="SELL").length;
   const noTradeCount = indexScans.filter(r=>r.action==="WAIT"||r.action==="NO TRADE").length;
+  const verifiedIndex = list.filter(s => INDEX_STRATEGIES.some(x => x.label===s.strategy));
+  const filteredVerified = indexFilter==="ALL" ? verifiedIndex : verifiedIndex.filter(s=>s.symbol===indexFilter);
+  const metrics=outcomeMetrics(filteredVerified);
+  const resultsBy=(key:(s:typeof filteredVerified[number])=>string)=>{
+    const groups = new Map<string, typeof filteredVerified>();
+    for(const s of filteredVerified){const k=key(s);groups.set(k,[...(groups.get(k)??[]),s]);}
+    return [...groups.entries()].map(([name,items])=>({name,metrics:outcomeMetrics(items)})).sort((a,b)=>b.metrics.resolved-a.metrics.resolved);
+  };
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-background">
@@ -117,6 +127,25 @@ function AnalysisPage() {
               </div>
             ))}
           </div>
+        </section>
+        <section className="mt-5 rounded-xl border border-border bg-card/60 p-4">
+          <h2 className="font-display text-lg font-bold">INDEX SIGNAL OUTCOME ANALYSIS</h2>
+          <p className="mt-1 font-mono text-[11px] text-muted-foreground">Completed, candle-verified signal outcomes only. Hypothetical full TP1 exit or full stop; excludes spread, slippage and fees. No actual trade execution or guaranteed profitability. Historical backtests NOT included.</p>
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+            <Stat label="Resolved" value={metrics.resolved}/>
+            <Stat label="Win rate" value={metrics.winRate==null?"—":metrics.winRate+"%"}/>
+            <Stat label="Average R" value={metrics.avgR==null?"—":metrics.avgR.toFixed(2)}/>
+            <Stat label="Gross profit factor" value={metrics.profitFactor==null?"—":metrics.profitFactor.toFixed(2)}/>
+            <Stat label="Max drawdown (R)" value={metrics.maxDrawdownR==null?"—":metrics.maxDrawdownR.toFixed(2)}/>
+          </div>
+          {(["strategy","timeframe","index","month"] as const).map(k=>{
+            const groups=k==="strategy"?resultsBy(s=>s.strategy??"Unknown"):k==="timeframe"?resultsBy(s=>s.timeframe):k==="index"?resultsBy(s=>s.symbol):resultsBy(s=>new Date(s.signalTime).toISOString().slice(0,7));
+            return <details key={k} className="mt-3 rounded border border-border p-2">
+              <summary className="cursor-pointer font-mono text-xs uppercase">Results by {k}</summary>
+              {groups.length===0?<p className="mt-2 text-xs text-muted-foreground">No verified results.</p>:groups.map(g=><div key={g.name} className="mt-2 flex flex-wrap justify-between gap-2 font-mono text-[11px]"><span>{g.name}</span><span>{g.metrics.resolved} resolved · Win {g.metrics.winRate??"—"}% · Avg {g.metrics.avgR??"—"}R</span></div>)}
+            </details>;
+          })}
+          <p className="mt-3 font-mono text-[11px] text-muted-foreground">Market-regime attribution unavailable until the regime is captured in the persistent signal record. Costs and time-separated out-of-sample backtests also remain pending.</p>
         </section>
         {list.length === 0 ? (
           <div className="mt-12 rounded-xl border border-border bg-card/60 p-8 text-center backdrop-blur">
