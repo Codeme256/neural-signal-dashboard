@@ -123,11 +123,11 @@ export function analyzeIndex(input:IndexInput):Analysis{
  const selected=input.strategy==="all"||!input.strategy?(input.enabled??INDEX_DEFAULT_ENABLED):[input.strategy];
  const ids=INDEX_STRATEGIES.filter(s=>selected.includes(s.id)&&s.timeframes.some(t=>t===tf));
  const stamp=closed.at(-1)?closed.at(-1)!.time+TF_SECONDS[tf]*1000:null;
- const base:Analysis={action:"NO TRADE",score:0,grade:"WEAK — NO TRADE",strategy:null,strategyId:null,timeframe:tf,higherTimeframe:htf,confirmTimeframe:CONFIRM_TF[tf],higherTrend:"NEUTRAL",marketOpen:input.open,lastCandleTime:stamp,entry:null,entryZone:null,stopLoss:null,takeProfit1:null,takeProfit2:null,riskReward:null,invalidation:null,confirmation:null,reasons:[],checks:[],breakdown:[],strategies:[]};
+ const base:Analysis={action:"NO TRADE",score:0,grade:"WEAK — NO TRADE",strategy:null,strategyId:null,timeframe:tf,higherTimeframe:htf,confirmTimeframe:CONFIRM_TF[tf],higherTrend:"NEUTRAL",marketOpen:input.open,lastCandleTime:stamp,expiresAt:stamp==null?null:stamp+TF_SECONDS[tf]*1000,entry:null,entryZone:null,stopLoss:null,takeProfit1:null,takeProfit2:null,riskReward:null,invalidation:null,confirmation:null,reasons:[],checks:[],breakdown:[],strategies:[]};
  const reject=(message:string):Analysis=>({...base,reasons:[message]});
  if(!input.open)return reject("Market closed — no active index signal.");
  if(closed.length<70)return reject(`Insufficient index data: ${closed.length} completed candles (need 70).`);
- if(isStale(closed,tf,now))return reject("Index candles are stale — no actionable signal.");
+ if(isStale(closed,tf,now)||stamp==null||now>stamp+TF_SECONDS[tf]*1000+60000)return reject("Index candles are stale — no actionable signal.");
  if(!ids.length)return reject("No enabled index strategies support this timeframe. Select another timeframe or enable one.");
  const ctx=buildContext(closed,5);
  if(!ctx)return reject("Index indicators unavailable; refusing to invent a signal.");
