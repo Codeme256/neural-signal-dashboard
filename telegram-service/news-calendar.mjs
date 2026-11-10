@@ -42,7 +42,7 @@ export function normalizeEconomicCalendar(json,now=Date.now()) {
    .filter(e=>Date.parse(e.scheduledAt)>now-3*3600000&&Date.parse(e.scheduledAt)<now+31*86400000)
    .sort((a,b)=>Date.parse(a.scheduledAt)-Date.parse(b.scheduledAt)).slice(0,45);
  const updatedAt=typeof json.updatedAt==="string"&&Number.isFinite(Date.parse(json.updatedAt))?json.updatedAt:null;
- const stale=!updatedAt || now-Date.parse(updatedAt)>72*3600000 || Date.parse(updatedAt)>now+5*60000;
+ const stale=!updatedAt || now-Date.parse(updatedAt)>7*86400000 || Date.parse(updatedAt)>now+5*60000;
  return {events,source:"XOOMAR",sourceUrl:"https://xoomar.com/markets/calendar",
   updatedAt,stale,coverage:"United States, high-impact scheduled releases only",
   forecastAvailable:false,note:"No directional forecast: conditional scenarios only. Actual market reaction can reverse. Calendar times can change.",
