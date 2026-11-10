@@ -65,6 +65,7 @@ function Dashboard() {
           </div>
           <div className="flex items-center gap-2">
             <IndexNotificationCenter markets={markets} />
+            <Link to="/news" className="chip">📰 PRE-NEWS</Link>
             <Link to="/analysis" className="chip">📊 ANALYSIS</Link>
             <UserMenu />
             <div className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-4 py-2 font-mono text-xs backdrop-blur">
