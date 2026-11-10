@@ -69,7 +69,6 @@ export function PreNewsCalendar(){
   setScanError("");setScanResult(null);
   if(!chosenEvent){setScanError("Select an upcoming verified release first.");return;}
   if(calendar?.stale){setScanError("Economic calendar is stale. Refresh the feed before scanning.");return;}
-  if(!related){setScanError(selected+" is not listed as directly affected by "+chosenEvent.currency+" news. Choose an affected pair.");return;}
   if(!market){setScanError("This instrument is not currently available from the Deriv market feed. Its technical bias cannot be verified.");return;}
   if(!market.open){setScanError("This market is closed. No fresh technical scan can be produced.");return;}
   setScanning(true);
@@ -126,6 +125,12 @@ export function PreNewsCalendar(){
     <select id="pre-news-pair" value={selected} onChange={e=>setSelected(e.target.value)} className="w-full rounded-lg border border-border bg-card p-3 text-sm">
      {DISPLAY_PAIRS.map(p=><option key={p} value={p}>{p}</option>)}
     </select>
+    <button type="button" onClick={()=>{void runNewsScan();}}
+      disabled={scanning||loading||!chosenEvent||calendar?.stale===true}
+      className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-500 px-5 py-4 text-base font-bold tracking-wide text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:bg-cyan-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">
+      <Search className="h-5 w-5" />{scanning?"SCANNING NEWS…":"SCAN NEWS NOW — "+selected}
+    </button>
+    <p className="text-xs text-muted-foreground">Scans the next selected high-impact release and confirmed Deriv H1 candles. Pair impact may be indirect; news direction cannot be predicted.</p>
     <div className="rounded-xl border border-primary/30 bg-card/80 p-4">
      <h4 className="flex items-center gap-2 font-semibold"><Search className="h-4 w-4 text-primary"/> Scan news impact</h4>
      <label htmlFor="pre-news-event" className="mt-3 block text-xs text-muted-foreground">Select a news release</label>
@@ -133,8 +138,8 @@ export function PreNewsCalendar(){
       {upcoming.length===0&&<option value="">No upcoming events</option>}
       {upcoming.map(e=><option key={e.id} value={e.id}>{e.currency} · {e.event} · {eat.format(new Date(e.scheduledAt))} EAT</option>)}
      </select>
-     <p className="mt-3 text-xs text-muted-foreground">Affected pair: {related?"Yes, listed for this event":"Not listed"} · Deriv market: {market?(market.open?"Open":"Closed"):"Not supplied"}</p>
-     <button type="button" className="scan-btn mt-3 w-full text-sm" onClick={()=>{void runNewsScan();}} disabled={scanning||loading||!chosenEvent||calendar?.stale===true||!related||!market?.open}>
+     <p className="mt-3 text-xs text-muted-foreground">News impact: {related?"Directly listed":"Indirect / not listed"} · Deriv market: {market?(market.open?"Open":"Closed"):"Not supplied"}</p>
+     <button type="button" className="scan-btn mt-3 w-full text-sm" onClick={()=>{void runNewsScan();}} disabled={scanning||loading||!chosenEvent||calendar?.stale===true}>
        <Search className="mr-2 inline h-4 w-4"/>{scanning?"SCANNING CONFIRMED H1 CANDLES…":"SCAN "+selected+" FOR THIS NEWS"}
      </button>
      {scanError&&<p role="alert" className="mt-3 text-sm text-destructive">{scanError}</p>}
