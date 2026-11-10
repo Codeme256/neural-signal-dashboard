@@ -7,6 +7,8 @@ import { parseDerivMarkets, parseDerivOhlc } from "../src/lib/deriv-data";
 import { analyzeIndex } from "../src/lib/index-signal-engine";
 import { TF_SECONDS, HIGHER_TF, type Timeframe } from "../src/lib/strategies/types";
 
+type ScheduledController = { scheduledTime: number };
+type ExecutionContext = { waitUntil(promise: Promise<unknown>): void };
 interface Database {
   prepare(sql: string): {
     bind(...values: (string | number | null)[]): {
@@ -48,7 +50,7 @@ async function connect() {
   const res = await fetch(PUBLIC_WS, { headers: { Upgrade: "websocket" } }) as CloudflareSocketResponse;
   const ws = res.webSocket;
   if (!ws) throw Error("Deriv public WebSocket upgrade rejected");
-  ws.accept();
+  (ws as WebSocket & { accept(): void }).accept();
   return ws;
 }
 
