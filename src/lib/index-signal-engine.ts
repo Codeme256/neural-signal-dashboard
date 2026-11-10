@@ -143,7 +143,7 @@ export function analyzeIndex(input:IndexInput):Analysis{
  const st=Stochastic.calculate({high:closed.map(k=>k.high),low:closed.map(k=>k.low),close:closed.map(k=>k.close),period:14,signalPeriod:3}).at(-1);
  const generic:Check[]=[check("MACD histogram",mac?.histogram!=null?`${fmt(mac.histogram)} · ${mac.histogram>0?"bullish":mac.histogram<0?"bearish":"neutral"}`:"n/a",mac?.histogram!=null?mac.histogram>0:null),check("Bollinger 20/2",bb?`${fmt(bb.lower)} / ${fmt(bb.middle)} / ${fmt(bb.upper)} · ${ctx.last.close>bb.upper?"above upper":ctx.last.close<bb.lower?"below lower":"inside bands"}`:"n/a",bb?true:null),check("Stochastic 14/3",st?`K ${fmt(st.k,1)} / D ${fmt(st.d,1)} · ${st.k>80?"overbought":st.k<20?"oversold":st.k>st.d?"bullish crossover context":"bearish crossover context"}`:"n/a",st?true:null),check("ATR 14",fmt(ctx.atr),true),check("Data source","Deriv OHLC · completed candles · price-only (no exchange volume)",true),check("Market regime",base.marketRegime??"UNKNOWN",base.marketRegime!=="UNKNOWN"),check("Higher timeframe",`${htf} ${base.higherTrend}`,base.higherTrend!=="NEUTRAL"),check("Last completed candle",stamp?new Date(stamp).toISOString():"none",stamp!=null)];
  const evaluations=ids.map(s=>({s,...evaluate(s.id,closed,ctx.atr,ctx.adx,input.breakoutAtrThreshold??0.25)}));
- base.strategies=evaluations.map(({s,finding,checks})=>({id:s.id,name:s.label,dir:finding?.dir??null,score:finding?100:null,action:finding?(finding.dir===1?"BUY":"SELL"):"NO TRADE",note:finding?.why ?? (checks.filter(c=>c.ok===false).map(c=>c.label).join(", ") || "No confirmation")}));
+ base.strategies=evaluations.map(({s,finding,checks})=>({id:s.id,name:s.label,dir:finding?.dir??null,score:null,action:finding?"WAIT":"NO TRADE",note:finding?.why ?? (checks.filter(c=>c.ok===false).map(c=>c.label).join(", ") || "No confirmation")}));
  const valid=evaluations.filter((v):v is typeof v & {finding:Finding}=>v.finding!==null);
  base.checks=generic.concat(evaluations.flatMap(v=>v.checks.map(c=>({...c,label:`${v.s.label}: ${c.label}`}))));
  if(!valid.length)return {...base,action:"WAIT",grade:"MODERATE — WATCHLIST",reasons:["No fully confirmed index setup. No actionable BUY or SELL."]};
@@ -159,6 +159,7 @@ export function analyzeIndex(input:IndexInput):Analysis{
  const winner=scored.find(x=>x.lv.ok&&x.quality?.pass);
  if(!winner)return {...base,action:"WAIT",grade:"MODERATE — WATCHLIST",reasons:scored.map(x=>x.quality?.reason??(x.lv.ok?"Failed quality checks":x.lv.reason))};
  const winning=winner.v;
+ base.strategies=base.strategies.map(x=>x.id===winning.s.id?{...x,score:winner.quality?.score??null,action:winning.finding.dir===1?"BUY":"SELL",note:winning.finding.why}:x);
  const f=winning.finding;
  const level=winner.lv.ok?winner.lv.levels:null;
  if(!level)return reject("Could not calculate valid index levels.");
