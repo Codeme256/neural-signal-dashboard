@@ -57,6 +57,7 @@ export interface FileRoutesByTo {
   '/auth': typeof AuthRoute
   '/reset-password': typeof ResetPasswordRoute
   '/analysis': typeof AuthenticatedAnalysisRoute
+  '/news': typeof AuthenticatedNewsRoute
   '/': typeof AuthenticatedIndexRoute
 }
 export interface FileRoutesById {
