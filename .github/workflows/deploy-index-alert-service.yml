@@ -1,0 +1,49 @@
+name: Deploy APEX index alert Worker (manual only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type DEPLOY_INDEX_ALERTS to confirm deployment of only tradepulse-index-alert-service'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-apex-index-alert-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy-index-worker:
+    if: ${{ github.event.inputs.confirmation == 'DEPLOY_INDEX_ALERTS' }}
+    runs-on: ubuntu-latest
+    environment: index-alert-production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: 742dcd3a5234c856c900ac361f8478b0
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Check out approved main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install and verify project
+        run: |
+          npm install --legacy-peer-deps --no-audit --no-fund
+          npm test
+          npx tsc --noEmit
+          npm run build
+          node --test telegram-service/worker.test.mjs
+      - name: Validate targeted worker bundle
+        run: npx --yes wrangler@4 deploy --config index-alert-service/wrangler.jsonc --dry-run --outdir /tmp/apex-index-bundle
+      - name: Confirm Cloudflare deployment credential is available
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::CLOUDFLARE_API_TOKEN repository secret missing"; exit 1; }
+      - name: Deploy ONLY tradepulse-index-alert-service
+        run: npx --yes wrangler@4 deploy --config index-alert-service/wrangler.jsonc

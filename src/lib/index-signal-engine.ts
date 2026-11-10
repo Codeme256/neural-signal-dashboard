@@ -3,6 +3,7 @@ import { BollingerBands, MACD, Stochastic } from "technicalindicators";
 import { atrSeries, emaSeries, rsiSeries, adxLast, swings, structureTrend } from "./strategies/indicators";
 import { buildContext, higherTrend, trendSetup, liquiditySweep, fairValueGap, structureBreak } from "./strategies/detectors";
 import { closedCandles, isStale, buildLevels } from "./signal-engine";
+import { checkIndexCandles, evaluateIndexQuality } from "./index-signal-quality";
 import { HIGHER_TF, CONFIRM_TF, TF_SECONDS, type Analysis, type Ohlc, type Timeframe, type Dir, type Check } from "./strategies/types";
 
 export const INDEX_STRATEGIES = [
@@ -23,6 +24,8 @@ export type IndexInput = {
   candles: Ohlc[]; higher?: Ohlc[] | null; timeframe: Timeframe; now: number; open: boolean;
   decimals: number; strategy?: IndexStrategySelection; enabled?: IndexStrategyId[];
   minRR?: number; breakoutAtrThreshold?: number;
+  /** Hypothetical cost/slippage stress expressed as fraction of ATR; not a live spread quote. */
+  frictionAtrFraction?: number;
 };
 type Finding = { dir: Dir; stopRef: number; why: string; checks: Check[]; zone?: [number,number] | null };
 const check = (label:string, value:string, ok:boolean | null):Check => ({ label,value,ok });
@@ -126,7 +129,8 @@ export function analyzeIndex(input:IndexInput):Analysis{
  const base:Analysis={action:"NO TRADE",score:0,grade:"WEAK — NO TRADE",strategy:null,strategyId:null,timeframe:tf,higherTimeframe:htf,confirmTimeframe:CONFIRM_TF[tf],higherTrend:"NEUTRAL",marketOpen:input.open,lastCandleTime:stamp,expiresAt:stamp==null?null:stamp+TF_SECONDS[tf]*1000,entry:null,entryZone:null,stopLoss:null,takeProfit1:null,takeProfit2:null,riskReward:null,invalidation:null,confirmation:null,reasons:[],checks:[],breakdown:[],strategies:[]};
  const reject=(message:string):Analysis=>({...base,reasons:[message]});
  if(!input.open)return reject("Market closed — no active index signal.");
- if(closed.length<70)return reject(`Insufficient index data: ${closed.length} completed candles (need 70).`);
+ const dataError=checkIndexCandles(closed,tf,now);
+ if(dataError)return reject(dataError);
  if(isStale(closed,tf,now)||stamp==null||now>stamp+TF_SECONDS[tf]*1000+60000)return reject("Index candles are stale — no actionable signal.");
  if(!ids.length)return reject("No enabled index strategies support this timeframe. Select another timeframe or enable one.");
  const ctx=buildContext(closed,5);
@@ -139,16 +143,26 @@ export function analyzeIndex(input:IndexInput):Analysis{
  const st=Stochastic.calculate({high:closed.map(k=>k.high),low:closed.map(k=>k.low),close:closed.map(k=>k.close),period:14,signalPeriod:3}).at(-1);
  const generic:Check[]=[check("MACD histogram",mac?.histogram!=null?`${fmt(mac.histogram)} · ${mac.histogram>0?"bullish":mac.histogram<0?"bearish":"neutral"}`:"n/a",mac?.histogram!=null?mac.histogram>0:null),check("Bollinger 20/2",bb?`${fmt(bb.lower)} / ${fmt(bb.middle)} / ${fmt(bb.upper)} · ${ctx.last.close>bb.upper?"above upper":ctx.last.close<bb.lower?"below lower":"inside bands"}`:"n/a",bb?true:null),check("Stochastic 14/3",st?`K ${fmt(st.k,1)} / D ${fmt(st.d,1)} · ${st.k>80?"overbought":st.k<20?"oversold":st.k>st.d?"bullish crossover context":"bearish crossover context"}`:"n/a",st?true:null),check("ATR 14",fmt(ctx.atr),true),check("Data source","Deriv OHLC · completed candles · price-only (no exchange volume)",true),check("Market regime",base.marketRegime??"UNKNOWN",base.marketRegime!=="UNKNOWN"),check("Higher timeframe",`${htf} ${base.higherTrend}`,base.higherTrend!=="NEUTRAL"),check("Last completed candle",stamp?new Date(stamp).toISOString():"none",stamp!=null)];
  const evaluations=ids.map(s=>({s,...evaluate(s.id,closed,ctx.atr,ctx.adx,input.breakoutAtrThreshold??0.25)}));
- base.strategies=evaluations.map(({s,finding,checks})=>({id:s.id,name:s.label,dir:finding?.dir??null,score:finding?100:null,action:finding?(finding.dir===1?"BUY":"SELL"):"NO TRADE",note:finding?.why ?? (checks.filter(c=>c.ok===false).map(c=>c.label).join(", ") || "No confirmation")}));
+ base.strategies=evaluations.map(({s,finding,checks})=>({id:s.id,name:s.label,dir:finding?.dir??null,score:null,action:finding?"WAIT":"NO TRADE",note:finding?.why ?? (checks.filter(c=>c.ok===false).map(c=>c.label).join(", ") || "No confirmation")}));
  const valid=evaluations.filter((v):v is typeof v & {finding:Finding}=>v.finding!==null);
  base.checks=generic.concat(evaluations.flatMap(v=>v.checks.map(c=>({...c,label:`${v.s.label}: ${c.label}`}))));
  if(!valid.length)return {...base,action:"WAIT",grade:"MODERATE — WATCHLIST",reasons:["No fully confirmed index setup. No actionable BUY or SELL."]};
  if(new Set(valid.map(v=>v.finding.dir)).size>1)return {...base,reasons:["Index strategies disagree on direction — suppressed."]};
- const winning=valid[0]!;
+ const scored=valid.map(v=>{
+   const f=v.finding;
+   const lv=buildLevels({id:"trend",dir:f.dir,stopRef:f.stopRef,confirmation:f.why,reversal:false},ctx,{decimals:input.decimals,minRR:input.minRR??rrMin});
+   if(!lv.ok)return {v,lv,quality:null};
+   const level=lv.levels;
+   const quality=evaluateIndexQuality({strategy:v.s.id,direction:f.dir,higherTrend:base.higherTrend,regime:base.marketRegime??"UNKNOWN",rrGross:level.riskReward,entry:level.entry,stopLoss:level.stopLoss,takeProfit2:level.takeProfit2,atr:ctx.atr,frictionAtrFraction:input.frictionAtrFraction??0.1});
+   return {v,lv,quality};
+ }).sort((a,b)=>(b.quality?.score??0)-(a.quality?.score??0));
+ const winner=scored.find(x=>x.lv.ok&&x.quality?.pass);
+ if(!winner)return {...base,action:"WAIT",grade:"MODERATE — WATCHLIST",reasons:scored.map(x=>x.quality?.reason??(x.lv.ok?"Failed quality checks":x.lv.reason))};
+ const winning=winner.v;
+ base.strategies=base.strategies.map(x=>x.id===winning.s.id?{...x,score:winner.quality?.score??null,action:winning.finding.dir===1?"BUY":"SELL",note:winning.finding.why}:x);
  const f=winning.finding;
- const lv=buildLevels({id:"trend",dir:f.dir,stopRef:f.stopRef,confirmation:f.why,reversal:false},ctx,{decimals:input.decimals,minRR:input.minRR??rrMin});
- if(!lv.ok)return {...base,strategy:winning.s.label,reasons:[lv.reason]};
- const level=lv.levels;
+ const level=winner.lv.ok?winner.lv.levels:null;
+ if(!level)return reject("Could not calculate valid index levels.");
  const zone=f.zone?([Number(f.zone[0].toFixed(input.decimals)),Number(f.zone[1].toFixed(input.decimals))] as [number,number]):null;
- return {...base,action:f.dir===1?"BUY":"SELL",score:100,grade:"HIGH CONFLUENCE",strategy:winning.s.label,entry:level.entry,entryZone:zone,stopLoss:level.stopLoss,takeProfit1:level.takeProfit1,takeProfit2:level.takeProfit2,riskReward:level.riskReward,invalidation:`Close ${f.dir===1?"below":"above"} ${fmt(f.stopRef,input.decimals)} invalidates the setup.`,confirmation:f.why,breakdown:[{label:"Mandatory strategy rules",points:100,max:100}],reasons:["All required rules satisfied on completed price candles. No volume or spread data; experimental, not validated profitability."]};
+ return {...base,action:f.dir===1?"BUY":"SELL",score:winner.quality?.score??0,grade:(winner.quality?.score??0)>=85?"HIGH CONFLUENCE":"STRONG SETUP",strategy:winning.s.label,entry:level.entry,entryZone:zone,stopLoss:level.stopLoss,takeProfit1:level.takeProfit1,takeProfit2:level.takeProfit2,riskReward:level.riskReward,invalidation:`Close ${f.dir===1?"below":"above"} ${fmt(f.stopRef,input.decimals)} invalidates the setup.`,confirmation:f.why,breakdown:[{label:"Heuristic setup quality (NOT win probability)",points:winner.quality?.score??0,max:100}],reasons:["Completed-candle setup confirmed. Cost test assumes 0.1 ATR friction unless configured; this is NOT observed spread. Real execution costs and out-of-sample edge are unverified."]};
 }

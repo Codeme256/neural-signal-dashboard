@@ -16,7 +16,6 @@ const ENABLED_KEY = "tradepulse-index-enabled-v1";
 const INTERVAL_MS = 5 * 60 * 1000;
 const MAX_ALERTS = 100;
 const SCAN_TIMEFRAME: Timeframe = "M15";
-
 function readAlerts(): Alert[] {
   if (typeof window === "undefined") return [];
   try {
@@ -46,6 +45,9 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
   const [browserPermission, setBrowserPermission] = useState(false);
   const indices = useMemo(() => markets.filter((m) => m.category === "INDEX" && m.open), [markets]);
   const unread = alerts.filter((a) => !a.read).length;
+  // Optional server-side feed: persists while the browser is closed and is shared
+  // with the separate Telegram publisher. Never place publisher credentials here.
+  const feedUrl = import.meta.env["VITE_INDEX_ALERTS_URL"] as string | undefined;
 
   useEffect(() => {
     const existing = readAlerts();
@@ -53,6 +55,59 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
     setAlerts(existing);
     try { setEnabled(localStorage.getItem("tradepulse-index-auto-alerts-v1") === "on"); } catch { /* browser blocked storage */ }
   }, []);
+  useEffect(() => {
+    if (!feedUrl || typeof window === "undefined") return;
+    const controller = new AbortController();
+    const sync = async () => {
+      try {
+        const endpoint = new URL("/alerts", feedUrl).toString();
+        const response = await fetch(endpoint, { signal: controller.signal, cache: "no-store" });
+        if (!response.ok) return;
+        const result: unknown = await response.json();
+        const rows = typeof result === "object" && result !== null && "alerts" in result
+          ? (result as { alerts?: unknown }).alerts : null;
+        if (!Array.isArray(rows)) return;
+        const previous = new Map(readAlerts().map(x => [x.id, x]));
+        const next: Alert[] = rows.flatMap((row): Alert[] => {
+          if (!row || typeof row !== "object") return [];
+          const x = row as Record<string, unknown>;
+          const action = x["direction"];
+          const tf = x["timeframe"];
+          if (typeof x["id"] !== "string" || typeof x["symbol"] !== "string" ||
+            (action !== "BUY" && action !== "SELL") ||
+            !["M1","M5","M15","M30","H1","H4"].includes(String(tf)) ||
+            ![x["entry"],x["stop_loss"],x["tp1"],x["tp2"],x["candle_time"]].every(v => typeof v === "number" && Number.isFinite(v))) return [];
+          const id = x["id"] as string;
+          return [{
+            id, symbol: x["symbol"] as string, name: x["symbol"] as string,
+            action, strategy: typeof x["strategy"] === "string" ? x["strategy"] : "Trend Continuation",
+            timeframe: tf as Timeframe, at: x["candle_time"] as number,
+            expiresAt: typeof x["expires_at"] === "number" ? x["expires_at"] : null,
+            entry: x["entry"] as number, stopLoss: x["stop_loss"] as number,
+            tp1: x["tp1"] as number, tp2: x["tp2"] as number,
+            read: previous.get(id)?.read ?? false,
+          }];
+        });
+        if (controller.signal.aborted || !next.length) return;
+        const unseen = next.filter(x => !knownIds.current.has(x.id));
+        next.forEach(x => knownIds.current.add(x.id));
+        setAlerts(prev => {
+          const seen = new Set(prev.map(x => x.id));
+          const merged = [...next.filter(x => !seen.has(x.id)), ...prev].slice(0,MAX_ALERTS);
+          try { localStorage.setItem(STORE_KEY, JSON.stringify(merged)); } catch {}
+          return merged;
+        });
+        if (unseen.length && typeof Notification !== "undefined" && Notification.permission === "granted") {
+          const x = unseen[0]!;
+          new Notification("TradePulse · Confirmed index signal", { body: `${x.symbol} ${x.action} · ${x.timeframe} · ${x.strategy}`, tag: x.id });
+        }
+      } catch (e) { if (!controller.signal.aborted) console.warn("Index notification feed unavailable",e); }
+    };
+    void sync();
+    const interval = window.setInterval(() => { void sync(); }, 60000);
+    return () => { controller.abort(); window.clearInterval(interval); };
+  }, [feedUrl]);
+
   const save = useCallback((transform: (prev: Alert[]) => Alert[]) => {
     setAlerts((prev) => {
       const next = transform(prev);
@@ -148,7 +203,7 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
           <h2 className="font-display font-bold">INDEX SIGNAL ALERTS</h2>
           <button className="text-xs text-muted-foreground" onClick={() => setOpened(false)} aria-label="Close notifications">✕</button>
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">Automatic M15 index checks every 5 minutes while this dashboard is open. Confirmed signals only; no trade execution.</p>
+        <p className="mt-1 text-xs text-muted-foreground">Automatic M15 index checks while open. When the optional cloud alert service is connected, confirmed signals also sync from background scans. No trade execution.</p>
         <label className="mt-4 flex items-center justify-between gap-2 text-xs">
           <span>Automatic monitoring {enabled ? "ON" : "OFF"}</span>
           <input type="checkbox" checked={enabled} onChange={toggle} aria-label="Enable automatic index alerts" />
@@ -178,6 +233,7 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
             <p className="mt-2 font-mono">Entry {a.entry} · SL {a.stopLoss}</p>
             <p className="font-mono">TP1 {a.tp1} · TP2 {a.tp2}</p>
             {a.expiresAt != null && <p className="mt-1 text-muted-foreground">Expires: {new Date(a.expiresAt).toLocaleTimeString()}</p>}
+            {a.expiresAt != null && Date.now()>a.expiresAt && <p className="mt-1 text-warn">Historical alert · expired (not actionable)</p>}
             {!a.read && <button className="mt-2 underline" onClick={() => save((prev) => prev.map((x) => x.id === a.id ? { ...x, read: true } : x))}>Mark as read</button>}
           </article>)}
         </div>
