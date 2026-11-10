@@ -16,14 +16,14 @@ This is a **new independent Cloudflare Worker**, not a replacement for the exist
 3. Test scheduled Worker under Cloudflare `wrangler dev` with the supplied `index-alert-service/wrangler.jsonc`. **Do not deploy over the website Worker or Telegram Worker.**
 4. For the new Worker, configure environment bindings: `TRADEPULSE_DB` D1 binding (specified in Wrangler), `TELEGRAM_PUBLISH_URL` text variable set to the existing Telegram Worker URL ending in `/publish`, `CORS_ORIGIN` text variable set to `https://apex-signal-tank.davidmwesigwa71.workers.dev`, and `TRADEPULSE_PUBLISH_SECRET` a Cloudflare Worker **secret** matching the existing Telegram publisher's server secret. Never expose the publisher secret in browser code, commits or screenshots.
 5. Verify existing Telegram Worker is actually deployed and its `/health` returns ready=true. If it isn't, keep publisher disabled and don't claim Telegram alerts function.
-6. Configure website `VITE_INDEX_ALERTS_URL` as the new scanner Worker's HTTPS origin; rebuild the website after review. This variable is a public URL, not an access token.
+6. Configure website `VITE_INDEX_ALERTS_URL` as the new scanner Worker's full HTTPS `/alerts` endpoint URL; rebuild the website after review. This variable is a public URL, not an access token.
 7. Verify scan logs, D1 rows, duplicates, timestamp freshness, website browser read state, Telegram delivery, and stale-market suppression. No legitimate signal should be fabricated for testing.
 8. Confirm preserved Forex scans, old Telegram webhook and subscribers, existing D1 records and current UI.
 
 ## Known limitations
 - Deployment and live WebSocket-to-Deriv compatibility are not verified in this pull request.
 - Site has separate browser-based scanning; the server feed improves cross-device delivery but has no private per-user read state.
-- Telegram publication currently occurs when a new signal row is stored; if publishing fails the row remains PENDING, but automatic retry logic must be validated before production.
+- Telegram publication currently occurs when a new signal row is stored; if publishing fails the row remains PENDING; a bounded retry routine is implemented but must be validated before production.
 - The Deriv public market-data WebSocket does not require the user's public Deriv App ID or a private API token.
 - No strategy has a verified positive out-of-sample expectancy after costs.
 - A scheduled signal scan is not a prediction of a future candle. It can notify before manual scan, after a completed candle passes rules.
