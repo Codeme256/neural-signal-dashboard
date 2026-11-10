@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bell, BellRing, CheckCheck, RefreshCw } from "lucide-react";
 import { fetchCandles } from "@/lib/candle-store";
 import { analyzeIndex, INDEX_DEFAULT_ENABLED, INDEX_STRATEGIES, type IndexStrategyId } from "@/lib/index-signal-engine";
@@ -36,6 +36,8 @@ function selectedStrategies(): IndexStrategyId[] {
 
 export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] }) {
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  const knownIds = useRef<Set<string>>(new Set());
+  const scanning = useRef(false);
   const [opened, setOpened] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -46,7 +48,9 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
   const unread = alerts.filter((a) => !a.read).length;
 
   useEffect(() => {
-    setAlerts(readAlerts());
+    const existing = readAlerts();
+    knownIds.current = new Set(existing.map((a) => a.id));
+    setAlerts(existing);
     try { setEnabled(localStorage.getItem("tradepulse-index-auto-alerts-v1") === "on"); } catch { /* browser blocked storage */ }
   }, []);
   const save = useCallback((transform: (prev: Alert[]) => Alert[]) => {
@@ -58,7 +62,8 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
   }, []);
 
   const scan = useCallback(async (signal: AbortSignal) => {
-    if (signal.aborted || !indices.length) return;
+    if (signal.aborted || !indices.length || scanning.current) return;
+    scanning.current = true;
     setBusy(true); setError(null);
     try {
       const fresh: Alert[] = [];
@@ -92,12 +97,9 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
         }
       }
       if (signal.aborted) return;
-      let newAlerts: Alert[] = [];
-      save((prev) => {
-        const seen = new Set(prev.map((a) => a.id));
-        newAlerts = fresh.filter((a) => !seen.has(a.id));
-        return [...newAlerts, ...prev].slice(0, MAX_ALERTS);
-      });
+      const newAlerts = fresh.filter((a) => !knownIds.current.has(a.id));
+      newAlerts.forEach((a) => knownIds.current.add(a.id));
+      if (newAlerts.length) save((prev) => [...newAlerts, ...prev].slice(0, MAX_ALERTS));
       setLastChecked(Date.now());
       if (newAlerts.length && typeof Notification !== "undefined" && Notification.permission === "granted") {
         const latest = newAlerts[0]!;
@@ -109,6 +111,7 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
     } catch {
       if (!signal.aborted) setError("Automatic monitoring could not complete. Try again when the feed is available.");
     } finally {
+      scanning.current = false;
       if (!signal.aborted) setBusy(false);
     }
   }, [indices, save]);
@@ -117,7 +120,7 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
     if (!enabled || !indices.length) return;
     const controller = new AbortController();
     void scan(controller.signal);
-    const timer = window.setInterval(() => { if (!busy) void scan(controller.signal); }, INTERVAL_MS);
+    const timer = window.setInterval(() => { void scan(controller.signal); }, INTERVAL_MS);
     return () => { controller.abort(); window.clearInterval(timer); };
   }, [enabled, indices, scan]); // automatic monitoring is active only while this page remains open
 
