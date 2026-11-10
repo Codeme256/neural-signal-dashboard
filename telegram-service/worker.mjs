@@ -1,9 +1,11 @@
+import { fetchEconomicCalendar, formatEventReminder } from "./news-calendar.mjs";
 /** Independent TradePulse Telegram notification Worker.
  * No Supabase, no TradePulse browser dependencies, no MT5/trade execution.
  * One shared bot; private /start & /stop subscriptions; optional channel broadcasting.
  * /publish accepts ONLY authenticated server-side sources. This Worker does not
  * generate signals; attach a verified scanner/publisher before expecting automatic alerts.
  */
+const NEWS_SOURCE_TIMEOUT=10000;
 const HEADER = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" };
 const respond = (payload, status=200) => new Response(JSON.stringify(payload), { status, headers: HEADER });
 const botValid = token => typeof token === "string" && /^\d{5,15}:[A-Za-z0-9_-]{25,}$/.test(token);
@@ -256,8 +258,18 @@ async function commandReply(env,chatId,id,cmd,args) {
   "Index scanner quality gates: completed candles, regime and H1 direction checks, minimum stressed 1:2 reward/risk. Cost assumptions are estimates, not measured spreads.\nNo real-money account risk limits are enforced by this signal-only bot.");
  if(cmd==="mode"||cmd==="autotrading")return sendText(env,chatId,
   "Mode: SIGNALS ONLY. Auto-scanning may generate notifications, but automatic order placement is unavailable. No brokerage execution controls are connected.");
- if(cmd==="news")return sendText(env,chatId,
-  "Live economic news feed is not connected. No current economic-calendar events can be verified inside this bot. Do not interpret this as no upcoming news.");
+ if(cmd==="news") {
+  try {
+   const calendar=await fetchEconomicCalendar();
+   if(calendar.stale)return sendText(env,chatId,"📰 Economic calendar source is STALE; do not rely on release times until updated. Data: XOOMAR.");
+   const upcoming=calendar.events.filter(e=>Date.parse(e.scheduledAt)>Date.now()).slice(0,5);
+   if(!upcoming.length)return sendText(env,chatId,"No upcoming verified HIGH-impact US events in the retrieved calendar. Other currencies not covered. Data: XOOMAR.");
+   return sendText(env,chatId,"📰 Upcoming HIGH-impact US releases (EAT)\n\n"+
+    upcoming.map(e=>e.event+"\n"+new Intl.DateTimeFormat("en-GB",{timeZone:"Africa/Kampala",dateStyle:"medium",timeStyle:"short"}).format(new Date(e.scheduledAt))+
+     " EAT\nAffected: EURUSD, GBPUSD, USDJPY, XAUUSD, DXY, US indices\nDirection: unknown until actual data").join("\n\n")+
+    "\n\nUse /news anytime. Scenarios are conditional; not predictions. Data: XOOMAR · https://xoomar.com/markets/calendar");
+  }catch{return sendText(env,chatId,"Economic calendar unavailable. No news timings can be verified. Do not assume there are no upcoming events.");}
+ }
  if(["account","positions","close","dailypl","drawdown"].includes(cmd))return sendText(env,chatId,FINANCE_UNAVAILABLE);
  if(cmd==="confirm"||cmd==="cancel")return sendText(env,chatId,"No pending trade or account action exists. This service never executes trades.");
  if(cmd==="support")return sendText(env,chatId,
@@ -314,9 +326,81 @@ async function broadcast(env, a) {
   }
   return {sent,failed,duplicate,recipients:targets.length,truncated:(subscribers.results??[]).length===100};
 }
+
+/** D1 idempotency protects subscribers and channel from duplicate reminders across cron retries. */
+async function ensureNewsTable(env) {
+ await env.TRADEPULSE_DB.prepare(
+  "CREATE TABLE IF NOT EXISTS news_alert_delivery (event_id TEXT NOT NULL,stage TEXT NOT NULL,recipient TEXT NOT NULL,sent_at TEXT NOT NULL,PRIMARY KEY(event_id,stage,recipient))"
+ ).run();
+}
+async function sendNewsReminder(env,event,stage,minutes) {
+ const channel=str(env.TRADEPULSE_TELEGRAM_CHANNEL_ID).trim();
+ const subscriberRows=await env.TRADEPULSE_DB.prepare(
+  "SELECT telegram_chat_id FROM telegram_subscriptions WHERE enabled=1 LIMIT 100"
+ ).all();
+ const targets=[...new Set([...(channel?[channel]:[]),...(subscriberRows.results??[]).map(x=>String(x.telegram_chat_id))])];
+ let sent=0,failed=0;
+ for(const chatId of targets) {
+  if(!/^-?\d{3,20}$/.test(chatId))continue;
+  const saved=await env.TRADEPULSE_DB.prepare(
+   "INSERT OR IGNORE INTO news_alert_delivery (event_id,stage,recipient,sent_at) VALUES (?,?,?,?)"
+  ).bind(event.id,stage,chatId,new Date().toISOString()).run();
+  if((saved.meta?.changes??0)!==1)continue;
+  try {
+   await telegram(env,"sendMessage",{chat_id:chatId,text:formatEventReminder(event,minutes),disable_web_page_preview:true});
+   sent++;
+  } catch {
+   failed++;
+   await env.TRADEPULSE_DB.prepare(
+    "DELETE FROM news_alert_delivery WHERE event_id=? AND stage=? AND recipient=?"
+   ).bind(event.id,stage,chatId).run();
+  }
+ }
+ return {sent,failed};
+}
+async function scanUpcomingNews(env) {
+ if(!hasDb(env)||!botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN))
+  throw Error("News reminders require Telegram bot and D1");
+ const now=Date.now(),calendar=await fetchEconomicCalendar(now);
+ if(calendar.stale) {
+  console.warn("Pre-news calendar stale; no alerts sent",calendar.updatedAt);
+  return;
+ }
+ await ensureNewsTable(env);
+ let matched=0,sent=0,failed=0;
+ for(const event of calendar.events) {
+  if(event.actual!==null)continue;
+  const minutes=(Date.parse(event.scheduledAt)-now)/60000;
+  const stage=minutes>50&&minutes<=65?"T60":minutes>5&&minutes<=20?"T15":null;
+  if(!stage)continue;
+  matched++;
+  const result=await sendNewsReminder(env,event,stage,stage==="T60"?60:15);
+  sent+=result.sent;failed+=result.failed;
+ }
+ console.log("Pre-news scheduled scan",{source:calendar.source,checked:calendar.events.length,matched,sent,failed});
+}
+
 export default {
  async fetch(request,env) {
   const url=new URL(request.url);
+  if(url.pathname==="/news/calendar") {
+   if(request.method!=="GET")return respond({error:"Method not allowed"},405);
+   const headers={...HEADER,"Access-Control-Allow-Origin":"*","Vary":"Origin","Cache-Control":"public, max-age=300, s-maxage=300"};
+   try {
+    const cache=typeof caches!=="undefined"?caches.default:null;
+    const key=new Request(url.origin+"/news/calendar");
+    if(cache) {
+     const hit=await cache.match(key);
+     if(hit)return hit;
+    }
+    const calendar=await fetchEconomicCalendar();
+    const result=new Response(JSON.stringify(calendar),{status:200,headers});
+    if(cache)await cache.put(key,result.clone());
+    return result;
+   }catch{return new Response(JSON.stringify({error:"Calendar source unavailable",events:[],stale:true}),
+     {status:503,headers:{...HEADER,"Access-Control-Allow-Origin":"*"}});}
+  }
+
   if(url.pathname==="/health"&&request.method==="GET")
     return respond({service:"tradepulse-telegram",ready:!!(hasDb(env)&&botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN)&&env.TELEGRAM_WEBHOOK_SECRET),mode:"standalone",signalSourceConnected:false});
   if(url.pathname==="/telegram/webhook"){
@@ -385,5 +469,9 @@ export default {
     }catch{return respond({error:"Delivery failed"},503);}
   }
   return respond({service:"TradePulse Telegram Service",message:"Use Telegram /start to subscribe, or GET /health."},200);
- }
+ },
+ async scheduled(_controller,env,ctx) {
+  ctx.waitUntil(scanUpcomingNews(env).catch(err=>console.error("Pre-news scan error:",err.message)));
+ },
+
 };
