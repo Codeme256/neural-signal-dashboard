@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, BellRing, CalendarClock, RefreshCw, Search } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { useDerivMarkets } from "@/hooks/use-deriv";
 import { fetchCandles } from "@/lib/candle-store";
 import { deriveSignal } from "@/lib/deriv-data";
@@ -39,6 +40,8 @@ export function PreNewsCalendar(){
  const [scanResult,setScanResult]=useState<NewsScan|null>(null);
  const [scanError,setScanError]=useState("");
  const [scanning,setScanning]=useState(false);
+ const [resultsOpen,setResultsOpen]=useState(false);
+ const [scannedEvent,setScannedEvent]=useState<Event|null>(null);
  const marketsQ=useDerivMarkets();
  const refresh=async(signal?:AbortSignal)=>{
   try {
@@ -66,6 +69,8 @@ export function PreNewsCalendar(){
  const market=marketsQ.data?.find(m=>m.symbol===selected && ["FOREX","METAL","INDEX"].includes(m.category));
  const related=!!chosenEvent?.affected.includes(selected);
  const runNewsScan=async()=>{
+  setScannedEvent(chosenEvent);
+  setResultsOpen(true);
   setScanError("");setScanResult(null);
   if(!chosenEvent){setScanError("Select an upcoming verified release first.");return;}
   if(calendar?.stale){setScanError("Economic calendar is stale. Refresh the feed before scanning.");return;}
@@ -142,16 +147,7 @@ export function PreNewsCalendar(){
      <button type="button" className="scan-btn mt-3 w-full text-sm" onClick={()=>{void runNewsScan();}} disabled={scanning||loading||!chosenEvent||calendar?.stale===true}>
        <Search className="mr-2 inline h-4 w-4"/>{scanning?"SCANNING CONFIRMED H1 CANDLES…":"SCAN "+selected+" FOR THIS NEWS"}
      </button>
-     {scanError&&<p role="alert" className="mt-3 text-sm text-destructive">{scanError}</p>}
-     {scanResult&&scanResult.eventId===chosenEvent?.id&&scanResult.symbol===selected&&
-      <div className="mt-4 space-y-2 rounded-lg border border-border p-3 text-sm" aria-live="polite">
-       <p className="font-semibold">Technical scan: {scanResult.technicalBias}</p>
-       <p>Last completed H1 candle: {scanResult.dataTime?eat.format(new Date(scanResult.dataTime))+" EAT":"Unavailable"}</p>
-       <p className="text-xs">EMA9: {scanResult.ema9?.toFixed(5)??"—"} · EMA21: {scanResult.ema21?.toFixed(5)??"—"} · RSI14: {scanResult.rsi?.toFixed(1)??"—"}</p>
-       <p className="text-xs">{scanResult.note}</p>
-       <p className="text-xs">{scanResult.minutesToRelease>0?"Release approximately "+scanResult.minutesToRelease+" minutes away.":"Release time reached or passed."} {scanResult.minutesToRelease<=60&&scanResult.minutesToRelease>0?"Avoid pre-release entries and the initial news spike.":""}</p>
-       <p className="text-xs font-medium text-amber-400">This H1 technical bias is NOT a prediction of the news reaction. A release surprise can reverse the existing trend. Do not treat it as an entry signal.</p>
-      </div>}
+
     </div>
     <div className="rounded-xl border border-border bg-card/70 p-4">
      <h4 className="font-semibold">{selected} · Scenario map</h4>
@@ -170,5 +166,60 @@ export function PreNewsCalendar(){
     </div>
    </div>
   </div>
+  <Dialog open={resultsOpen} onOpenChange={setResultsOpen}>
+   <DialogContent className="max-h-[88dvh] w-[calc(100vw-1.5rem)] max-w-2xl overflow-y-auto border-primary/40 bg-background p-5 sm:p-7">
+    <DialogTitle className="font-display text-xl font-bold text-primary">APEX · PRE-NEWS SCAN RESULT</DialogTitle>
+    <DialogDescription>Verified calendar context + last completed Deriv H1 candles. Technical bias is not a prediction of the release.</DialogDescription>
+    <div className="space-y-4 text-sm">
+     <div className="rounded-lg border border-border bg-card/80 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+       <span className="font-semibold">{scanResult?.symbol??selected}</span>
+       <span className="text-xs font-semibold text-amber-400">{scannedEvent?.impact??"HIGH"} IMPACT · {scannedEvent?.currency??"NEWS"}</span>
+      </div>
+      <p className="mt-2 font-medium">{scannedEvent?.event??"No event selected"}</p>
+      {scannedEvent&&<p className="mt-1 text-muted-foreground">Release: {eat.format(new Date(scannedEvent.scheduledAt))} EAT ({utctime.format(new Date(scannedEvent.scheduledAt))} UTC)</p>}
+      <p className="mt-1 text-xs text-muted-foreground">Previous: {scannedEvent?.previous??"Not reported"} · Consensus: {scannedEvent?.forecast??"Not reported"} · Actual: {scannedEvent?.actual??"Pending"}</p>
+     </div>
+     {scanning&&<div role="status" className="rounded-lg border border-primary/30 bg-primary/10 p-4">
+      <RefreshCw className="mr-2 inline h-4 w-4 animate-spin"/>Scanning the latest completed H1 candles…
+     </div>}
+     {!scanning&&scanError&&<div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 p-4">
+       <p className="font-semibold text-destructive">NO VERIFIED SIGNAL — SCAN UNAVAILABLE</p>
+       <p className="mt-2">{scanError}</p>
+       <p className="mt-2 text-xs text-muted-foreground">No direction or entry is provided when data is stale, a market is closed, or the source fails.</p>
+      </div>}
+     {!scanning&&scanResult&&
+      <>
+       <div className="rounded-lg border border-border bg-card/80 p-4">
+        <p className="text-xs uppercase tracking-wide text-muted-foreground">Existing H1 technical bias — not news prediction</p>
+        <p className={"mt-2 text-2xl font-bold "+(scanResult.technicalBias==="BULLISH"?"text-emerald-400":scanResult.technicalBias==="BEARISH"?"text-red-400":"text-amber-400")}>
+         {scanResult.technicalBias==="BULLISH"?"BULLISH TECHNICAL BIAS":scanResult.technicalBias==="BEARISH"?"BEARISH TECHNICAL BIAS":"WAIT / NO TRADE"}
+        </p>
+        <p className="mt-2 text-xs text-muted-foreground">Checked {eat.format(new Date(scanResult.checkedAt))} EAT · Last completed H1 close: {scanResult.dataTime?eat.format(new Date(scanResult.dataTime))+" EAT":"Unavailable"}</p>
+        <div className="mt-4 grid grid-cols-3 gap-2">
+         <div className="rounded-md bg-background p-3"><p className="text-xs text-muted-foreground">EMA 9</p><strong>{scanResult.ema9?.toFixed(5)??"—"}</strong></div>
+         <div className="rounded-md bg-background p-3"><p className="text-xs text-muted-foreground">EMA 21</p><strong>{scanResult.ema21?.toFixed(5)??"—"}</strong></div>
+         <div className="rounded-md bg-background p-3"><p className="text-xs text-muted-foreground">RSI 14</p><strong>{scanResult.rsi?.toFixed(1)??"—"}</strong></div>
+        </div>
+        <p className="mt-3">{scanResult.note}</p>
+       </div>
+       <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+        <p className="font-semibold text-amber-400">News proximity &amp; execution risk</p>
+        <p className="mt-2">{scanResult.minutesToRelease>0?"Approximately "+scanResult.minutesToRelease+" minutes until release.":"Scheduled release time reached or passed."}</p>
+        <p className="mt-2">H1/M15: pre-release structure · M1/M5: volatile reaction · M15/H1: wait for a post-release close.</p>
+        <p className="mt-2">Spreads and slippage may widen substantially. No entry price, SL or TP is generated by this news scan.</p>
+       </div>
+      </>
+     }
+     {scannedEvent&&<div className="rounded-lg border border-border bg-card/80 p-4">
+      <p className="font-semibold">Possible news impact · {scanResult?.symbol??selected}</p>
+      <p className="mt-2">{scannedEvent.scenarios[scanResult?.symbol??selected]??"Impact may be indirect; actual direction depends on data surprise, yields and market reaction."}</p>
+      <p className="mt-2 text-xs text-muted-foreground">Affected instruments: {scannedEvent.affected.slice(0,12).join(", ")}</p>
+     </div>}
+     <p className="text-xs font-medium text-amber-400">A directional technical reading is not a confirmed BUY or SELL trade signal. There is no reliable way to know exact news-driven direction in advance.</p>
+     <button type="button" onClick={()=>setResultsOpen(false)} className="w-full rounded-lg border border-border bg-card px-4 py-3 font-semibold hover:bg-accent">CLOSE ANALYSIS</button>
+    </div>
+   </DialogContent>
+  </Dialog>
  </section>;
 }
