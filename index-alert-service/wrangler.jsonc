@@ -16,5 +16,16 @@
       "database_id": "3d9bb1bf-f57f-4ec1-b60f-f0f5a62204d6"
     }
   ],
-  "keep_vars": true
+  "keep_vars": true,
+  "vars": {
+    "CORS_ORIGIN": "https://apex-signal-tank.davidmwesigwa71.workers.dev",
+    "TELEGRAM_PUBLISH_URL": "https://tradepulse-telegram-service.davidmwesigwa71.workers.dev/publish"
+  },
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true
+    }
+  }
 }
