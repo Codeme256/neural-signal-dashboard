@@ -114,6 +114,23 @@ async function record(env: Env, a: Alert): Promise<boolean> {
   return (result.meta?.changes ?? 0) > 0;
 }
 
+/** Retry alerts after temporary Telegram failure; publisher deduplicates per subscriber. */
+async function retryPending(env: Env) {
+  if (!env.TELEGRAM_PUBLISH_URL || !env.TRADEPULSE_PUBLISH_SECRET) return;
+  const recent = Date.now() - 90 * 60 * 1000;
+  const pending = await env.TRADEPULSE_DB.prepare(
+    "SELECT * FROM index_alerts WHERE notification_status='PENDING' AND candle_time>? ORDER BY created_at ASC LIMIT 10"
+  ).bind(recent).all<Alert>();
+  for(const a of pending.results??[]) {
+    try {
+      if (await publishTelegram(env,a)) {
+        await env.TRADEPULSE_DB.prepare("UPDATE index_alerts SET notification_status='SENT' WHERE id=?")
+          .bind(a.id).run();
+      }
+    } catch { /* Retain as pending for the next scheduled invocation. */ }
+  }
+}
+
 async function scheduledScan(env: Env) {
   if (!env.TRADEPULSE_DB) throw Error("Required index alert database binding is missing");
   const ws = await connect();
@@ -172,6 +189,7 @@ async function scheduledScan(env: Env) {
   } finally {
     try { ws.close(1000,"Scan complete"); } catch { /* disconnected */ }
   }
+  try { await retryPending(env); } catch { /* D1 unavailable; retry next run. */ }
   console.log("Index scheduled scan",{scanned,stored,deliveryFailures});
 }
 
