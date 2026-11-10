@@ -1,0 +1,38 @@
+name: Deploy APEX Telegram Bot Commands
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'telegram-service/worker.mjs'
+      - 'telegram-service/wrangler.jsonc'
+      - '.github/workflows/deploy-apex-telegram-commands.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-apex-telegram-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy-telegram-only:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_ACCOUNT_ID: '742dcd3a5234c856c900ac361f8478b0'
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify credentials
+        run: test -n "$CLOUDFLARE_API_TOKEN"
+      - name: Test Telegram bot
+        run: node --test telegram-service/worker.test.mjs
+      - name: Bundle only Telegram Worker
+        run: npx --yes wrangler@4 deploy -c telegram-service/wrangler.jsonc --dry-run --outdir /tmp/apex-telegram-bundle
+      - name: Deploy ONLY tradepulse-telegram-service
+        run: npx --yes wrangler@4 deploy -c telegram-service/wrangler.jsonc --keep-vars
