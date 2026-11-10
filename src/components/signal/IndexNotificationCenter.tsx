@@ -86,7 +86,7 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
             id: [market.derivSymbol, SCAN_TIMEFRAME, analysis.lastCandleTime, analysis.action, analysis.strategy ?? ""].join(":"),
             symbol: market.symbol, name: market.name, action: analysis.action,
             strategy: analysis.strategy ?? "Index strategy", timeframe: SCAN_TIMEFRAME,
-            at: analysis.lastCandleTime, expiresAt: analysis.expiresAt,
+            at: analysis.lastCandleTime, expiresAt: analysis.expiresAt ?? null,
             entry: analysis.entry, stopLoss: analysis.stopLoss,
             tp1: analysis.takeProfit1, tp2: analysis.takeProfit2, read: false,
           });
