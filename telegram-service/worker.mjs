@@ -129,6 +129,73 @@ async function fetchDerivPrice(underlying) {
   return {price,time};
  } finally {try{ws.close(1000,"Quote received");}catch{}}
 }
+async function fetchDerivCandles(underlying) {
+ const res=await fetch("https://api.derivws.com/trading/v1/options/ws/public",{headers:{Upgrade:"websocket"}});
+ const ws=res.webSocket;
+ if(!ws)throw Error("Deriv candles unavailable");
+ ws.accept();
+ try{
+  const raw=await new Promise((resolve,reject)=>{
+   const timer=setTimeout(()=>{cleanup();reject(Error("Deriv candle request timeout"));},9000);
+   function cleanup(){clearTimeout(timer);ws.removeEventListener("message",onMessage);ws.removeEventListener("error",onError);ws.removeEventListener("close",onError);}
+   function onError(){cleanup();reject(Error("Deriv disconnected"));}
+   function onMessage(event){
+    try {
+     const data=JSON.parse(String(event.data));
+     if(data.req_id!==1)return;
+     cleanup();
+     if(data.error)return reject(Error("Deriv candle data refused"));
+     resolve(data);
+    }catch{/* Invalid or unrelated frame: request still times out safely. */}
+   }
+   ws.addEventListener("message",onMessage);
+   ws.addEventListener("error",onError);
+   ws.addEventListener("close",onError);
+   ws.send(JSON.stringify({ticks_history:underlying,count:120,end:"latest",style:"candles",granularity:3600,req_id:1}));
+  });
+  const candles=raw.candles;
+  if(!Array.isArray(candles))throw Error("No candles");
+  const now=Date.now();
+  const valid=candles.map(c=>({
+   time:Number(c.epoch)*1000,open:Number(c.open),high:Number(c.high),
+   low:Number(c.low),close:Number(c.close)
+  })).filter(c=>[c.time,c.open,c.high,c.low,c.close].every(Number.isFinite)&&
+   c.time>0&&c.low>0&&c.high>=Math.max(c.open,c.close,c.low)&&c.low<=Math.min(c.open,c.close)&&
+   c.time+3600000<=now).sort((a,b)=>a.time-b.time);
+  if(valid.length<60)throw Error("Not enough completed candles");
+  const unique=valid.filter((c,i)=>i===0||c.time!==valid[i-1].time);
+  if(unique.length<60||now-(unique.at(-1).time+3600000)>2*3600000)
+   throw Error("Candle data unavailable or stale");
+  return unique;
+ }finally{try{ws.close(1000,"OHLC fetched");}catch{}}
+}
+function calculateEMA(values,period){
+ let ema=values.slice(0,period).reduce((a,b)=>a+b,0)/period;
+ for(const x of values.slice(period))ema=x*(2/(period+1))+ema*(1-2/(period+1));
+ return ema;
+}
+function analyzeCandles(symbol,candles){
+ const latest=candles.at(-1);
+ const closes=candles.map(c=>c.close);
+ const ema20=calculateEMA(closes,20),ema50=calculateEMA(closes,50);
+ const prior=candles.slice(-21,-1);
+ const high=Math.max(...prior.map(c=>c.high)),low=Math.min(...prior.map(c=>c.low));
+ const body=Math.abs(latest.close-latest.open);
+ const range=latest.high-latest.low;
+ const trend=latest.close>ema20&&ema20>ema50?"UPTREND":
+  latest.close<ema20&&ema20<ema50?"DOWNTREND":"MIXED";
+ const structure=latest.close>high?"Closed above 20-candle range high":
+  latest.close<low?"Closed below 20-candle range low":"Inside previous 20-candle range";
+ return "APEX On-Demand H1 Analysis · "+symbol+
+  "\nLast confirmed close: "+latest.close+
+  "\nCandle closed: "+new Date(latest.time+3600000).toISOString()+
+  "\nEMA20: "+ema20.toFixed(5)+" | EMA50: "+ema50.toFixed(5)+
+  "\nTrend classification: "+trend+
+  "\n20-candle structure: "+structure+
+  "\nLast candle: "+(latest.close>latest.open?"bullish":latest.close<latest.open?"bearish":"doji")+
+  ", body "+(range>0?(body/range*100).toFixed(0):"0")+"% of range"+
+  "\n\nTechnical context only — NOT a BUY/SELL signal or guarantee of profitability.";
+}
 async function commandReply(env,chatId,id,cmd,args) {
  const db=env.TRADEPULSE_DB;
  if(cmd==="start"||cmd==="resume") {
@@ -154,14 +221,21 @@ async function commandReply(env,chatId,id,cmd,args) {
   return sendText(env,chatId,"Personal Telegram alerts: "+(enabled?"ON":"OFF")+
    "\n/start or /resume — enable\n/pause or /stop — disable\nChannel posts depend on the channel configuration and available confirmed signals.");
  }
- if(cmd==="signal"||cmd==="history"||cmd==="analyze"||cmd==="report"||cmd==="performance") {
+ if(cmd==="analyze"){
+  const symbol=(args[0]||"EURUSD").toUpperCase().replace("/","");
+  const underlying=PRICE_SYMBOLS[symbol];
+  if(!underlying)return sendText(env,chatId,"Unsupported analysis symbol. Try /analyze EURUSD, GBPUSD, USDJPY, GBPJPY, XAUUSD or BTCUSD.");
+  try{return sendText(env,chatId,analyzeCandles(symbol,await fetchDerivCandles(underlying)));}
+  catch{return sendText(env,chatId,"A current, valid H1 analysis is unavailable for "+symbol+". No trade signal was generated.");}
+ }
+ if(cmd==="signal"||cmd==="history"||cmd==="report"||cmd==="performance") {
   let rows;
   try {rows=await recentAlerts(env,cmd==="history"||cmd==="report"?5:1);}
   catch {return sendText(env,chatId,"Index alerts database is unavailable. No signal can be confirmed.");}
   if(!rows.length)return sendText(env,chatId,"No confirmed index signals have been recorded yet. Nothing to trade. /price EURUSD can check a fresh market quote.");
   if(cmd==="performance")return sendText(env,chatId,"Recorded index signals: historical entries are available, but verified trading outcomes, win rate and profitability statistics are NOT tracked by this bot. /history shows recent signals.");
   if(cmd==="report")return sendText(env,chatId,"APEX Index Signal Activity (last "+rows.length+" records)\n\n"+rows.map(a=>a.symbol+" "+a.direction+" "+a.timeframe+" · "+new Date(a.candle_time).toISOString()).join("\n")+"\n\nThese are alerts, not executed trades.");
-  if(cmd==="analyze")return sendText(env,chatId,"Latest validated index setup:\n"+alertDescription(rows[0])+"\n\nBased on recorded confirmed-candle strategy output, not a new on-demand analysis or prediction.");
+
   return sendText(env,chatId,(cmd==="history"?"Recent Index Signals\n\n":"Latest Index Signal\n\n")+rows.map(alertDescription).join("\n\n"));
  }
  if(cmd==="watchlist")return sendText(env,chatId,
