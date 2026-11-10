@@ -1,9 +1,20 @@
 {
- "$schema": "https://unpkg.com/wrangler@4/config-schema.json",
- "name": "tradepulse-index-alert-service",
- "main": "worker.ts",
- "compatibility_date": "2026-11-10",
- "workers_dev": true,
- "triggers": { "crons": ["1,16,31,46 * * * *"] },
- "d1_databases": [{ "binding": "TRADEPULSE_DB", "database_name": "tradepulse-telegram", "database_id": "3d9bb1bf-f57f-4ec1-b60f-f0f5a62204d6" }]
+  "$schema": "https://unpkg.com/wrangler@4/config-schema.json",
+  "name": "tradepulse-index-alert-service",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-10",
+  "workers_dev": true,
+  "triggers": {
+    "crons": [
+      "1,16,31,46 * * * *"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "TRADEPULSE_DB",
+      "database_name": "tradepulse-telegram",
+      "database_id": "3d9bb1bf-f57f-4ec1-b60f-f0f5a62204d6"
+    }
+  ],
+  "keep_vars": true
 }
