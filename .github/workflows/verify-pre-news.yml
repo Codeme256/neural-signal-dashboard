@@ -1,0 +1,20 @@
+name: Verify APEX pre-news monitor
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  news-monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate news calendar behavior and Telegram commands
+        run: |
+          node --test telegram-service/news-calendar.test.mjs
+          node --test telegram-service/worker.test.mjs
+      - name: Verify Telegram news scheduler bundle
+        run: npx --yes wrangler@4 deploy --config telegram-service/wrangler.jsonc --dry-run --outdir /tmp/apex-news-bundle
