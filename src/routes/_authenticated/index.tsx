@@ -5,6 +5,7 @@ import { derivQuoteStatus, formatMarketPrice, type DerivMarket } from "@/lib/der
 import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { ScanDialog } from "@/components/signal/SignalDialog";
 import { UserMenu } from "@/components/auth/UserMenu";
+import { IndexNotificationCenter } from "@/components/signal/IndexNotificationCenter";
 
 export const Route = createFileRoute("/_authenticated/")({
   head: () => ({
@@ -63,6 +64,7 @@ function Dashboard() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <IndexNotificationCenter markets={markets} />
             <Link to="/analysis" className="chip">📊 ANALYSIS</Link>
             <UserMenu />
             <div className="flex items-center gap-2 rounded-full border border-border bg-card/60 px-4 py-2 font-mono text-xs backdrop-blur">
