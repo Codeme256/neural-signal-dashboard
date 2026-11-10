@@ -469,7 +469,7 @@ export default {
     }catch{return respond({error:"Delivery failed"},503);}
   }
   return respond({service:"TradePulse Telegram Service",message:"Use Telegram /start to subscribe, or GET /health."},200);
- }
+ },
  async scheduled(_controller,env,ctx) {
   ctx.waitUntil(scanUpcomingNews(env).catch(err=>console.error("Pre-news scan error:",err.message)));
  },
