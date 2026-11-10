@@ -371,7 +371,7 @@ async function scanUpcomingNews(env) {
  for(const event of calendar.events) {
   if(event.actual!==null)continue;
   const minutes=(Date.parse(event.scheduledAt)-now)/60000;
-  const stage=minutes>55&&minutes<=60?"T60":minutes>10&&minutes<=15?"T15":null;
+  const stage=minutes>50&&minutes<=65?"T60":minutes>5&&minutes<=20?"T15":null;
   if(!stage)continue;
   matched++;
   const result=await sendNewsReminder(env,event,stage,stage==="T60"?60:15);
