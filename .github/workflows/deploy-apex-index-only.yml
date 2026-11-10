@@ -1,0 +1,47 @@
+name: Deploy APEX Index Alert Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type DEPLOY_INDEX_ALERTS to publish only tradepulse-index-alert-service"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apex-index-alert-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy-index-only:
+    if: ${{ github.event.inputs.confirmation == 'DEPLOY_INDEX_ALERTS' }}
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_ACCOUNT_ID: "742dcd3a5234c856c900ac361f8478b0"
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - name: Checkout validated V2 scanner commit, not the website main branch
+        uses: actions/checkout@v4
+        with:
+          ref: 0d468374cf42d72bd815e3f086c79f3539745e90
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify deployment token exists
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::Missing CLOUDFLARE_API_TOKEN"; exit 1; }
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps --no-audit --no-fund
+      - name: Test index signal code and Worker
+        run: |
+          npm test
+          npx tsc --noEmit
+          node --test telegram-service/worker.test.mjs
+          npx --yes wrangler@4 deploy --config index-alert-service/wrangler.jsonc --dry-run --outdir /tmp/apex-index-bundle
+      - name: Deploy existing index alert Worker only, preserving Cloudflare variables
+        run: npx --yes wrangler@4 deploy --config index-alert-service/wrangler.jsonc --keep-vars
