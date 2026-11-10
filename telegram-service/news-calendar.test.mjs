@@ -21,7 +21,7 @@ test("malformed events and low impact events are ignored",()=>{
  assert.equal(normalizeEconomicEvent({...raw,importance:"low"}),null);
 });
 test("source staleness is explicitly identified",()=>{
- const data={data:[raw],updatedAt:"2026-11-06T00:00:00.000Z"};
+ const data={data:[raw],updatedAt:"2026-11-01T00:00:00.000Z"};
  const out=normalizeEconomicCalendar(data,Date.parse("2026-11-10T00:00:00.000Z"));
  assert.equal(out.stale,true);
  assert.equal(out.forecastAvailable,false);
