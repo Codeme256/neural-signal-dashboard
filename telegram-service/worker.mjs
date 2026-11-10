@@ -261,14 +261,17 @@ async function commandReply(env,chatId,id,cmd,args) {
  if(cmd==="news") {
   try {
    const calendar=await fetchEconomicCalendar();
-   if(calendar.stale)return sendText(env,chatId,"📰 Economic calendar source is STALE; do not rely on release times until updated. Data: XOOMAR.");
+   if(calendar.stale)return sendText(env,chatId,"📰 Calendar source is stale. Release times unverified; reminders disabled.");
    const upcoming=calendar.events.filter(e=>Date.parse(e.scheduledAt)>Date.now()).slice(0,5);
-   if(!upcoming.length)return sendText(env,chatId,"No upcoming verified HIGH-impact US events in the retrieved calendar. Other currencies not covered. Data: XOOMAR.");
-   return sendText(env,chatId,"📰 Upcoming HIGH-impact US releases (EAT)\n\n"+
-    upcoming.map(e=>e.event+"\n"+new Intl.DateTimeFormat("en-GB",{timeZone:"Africa/Kampala",dateStyle:"medium",timeStyle:"short"}).format(new Date(e.scheduledAt))+
-     " EAT\nAffected: EURUSD, GBPUSD, USDJPY, XAUUSD, DXY, US indices\nDirection: unknown until actual data").join("\n\n")+
-    "\n\nUse /news anytime. Scenarios are conditional; not predictions. Data: XOOMAR · https://xoomar.com/markets/calendar");
-  }catch{return sendText(env,chatId,"Economic calendar unavailable. No news timings can be verified. Do not assume there are no upcoming events.");}
+   if(!upcoming.length)return sendText(env,chatId,"No upcoming verified high-impact events from "+calendar.source+". This does not cover all market news.");
+   return sendText(env,chatId,"📰 Upcoming High-Impact Releases (EAT)\n\n"+
+    upcoming.map(e=>e.currency+" · "+e.event+"\n"+
+      new Intl.DateTimeFormat("en-GB",{timeZone:"Africa/Kampala",dateStyle:"medium",timeStyle:"short"}).format(new Date(e.scheduledAt))+
+      " EAT\nAffected: "+e.affected.slice(0,6).join(", ")+
+      "\nConsensus: "+(e.forecast??"Not available")+" · Previous: "+(e.previous??"Not available")+
+      "\nDirection: UNKNOWN until actual data").join("\n\n")+
+    "\n\nScenarios are conditional, not predictions. Source: "+calendar.source+" · "+calendar.sourceUrl);
+  }catch{return sendText(env,chatId,"Economic calendar unavailable from both configured sources. News timings not verified. Check /news later.");}
  }
  if(["account","positions","close","dailypl","drawdown"].includes(cmd))return sendText(env,chatId,FINANCE_UNAVAILABLE);
  if(cmd==="confirm"||cmd==="cancel")return sendText(env,chatId,"No pending trade or account action exists. This service never executes trades.");
