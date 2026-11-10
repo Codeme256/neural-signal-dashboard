@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, BellRing, CalendarClock, RefreshCw } from "lucide-react";
 
 type Event = {
-  id:string;event:string;currency:"USD";impact:string;country:string;
-  scheduledAt:string;period:string;previous:number|null;actual:number|null;
-  forecast:number|null;unit:string|null;source:string;sourceUrl:string;
+  id:string;event:string;currency:string;impact:string;country:string;
+  scheduledAt:string;period:string;previous:string|number|null;actual:string|number|null;
+  forecast:string|number|null;unit:string|null;source:string;sourceUrl:string;
   affected:string[];scenarios:Record<string,string>;
   direction:string;timeframes:{preparation:string;volatility:string;confirmation:string};
 };
@@ -57,7 +57,7 @@ export function PreNewsCalendar(){
   <div className="rounded-xl border border-border bg-card/75 p-5 backdrop-blur">
    <div className="flex flex-wrap items-center justify-between gap-3">
     <div><h2 className="flex items-center gap-2 font-display text-xl font-bold"><CalendarClock className="h-5 w-5 text-primary"/> PRE-NEWS DETECTOR</h2>
-    <p className="mt-1 text-xs text-muted-foreground">Live high-impact U.S. economic calendar · EAT (Uganda) · Telegram reminders 60 &amp; 15 minutes before releases</p></div>
+    <p className="mt-1 text-xs text-muted-foreground">High-impact economic calendar · EAT (Uganda) · Telegram reminders 60 &amp; 15 minutes before releases</p></div>
     <button onClick={()=>{setLoading(true);void refresh();}} className="chip" disabled={loading}><RefreshCw className="inline h-4 w-4 mr-2"/>{loading?"Checking…":"Refresh"}</button>
    </div>
    <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
@@ -66,21 +66,21 @@ export function PreNewsCalendar(){
    </div>
    {calendar?.stale&&<p role="alert" className="mt-3 text-sm text-amber-400">Calendar data is stale. Times may have changed; automatic reminders are paused until the feed updates.</p>}
    {error&&<p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
-   <div className="mt-3 text-xs text-muted-foreground">Coverage: U.S. major releases only · Source: <a className="underline text-primary" href="https://xoomar.com/markets/calendar" target="_blank" rel="noreferrer">XOOMAR</a> (official U.S. agency schedules) · Last source update: {calendar?.updatedAt?eat.format(new Date(calendar.updatedAt))+" EAT":"not verified"}. No consensus forecast available from this feed.</div>
+   <div className="mt-3 text-xs text-muted-foreground">Coverage: {calendar?.coverage??"Calendar coverage not available"} · Source: <a className="underline text-primary" href={calendar?.sourceUrl??"https://xoomar.com/markets/calendar"} target="_blank" rel="noreferrer">{calendar?.source??"Unavailable"}</a> · Last source update: {calendar?.updatedAt?eat.format(new Date(calendar.updatedAt))+" EAT":"not verified"}. Consensus may not be available; check individual releases.</div>
   </div>
   <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
    <div className="space-y-3">
     <h3 className="font-semibold">Upcoming high-impact releases</h3>
     {loading&&!calendar&&<p className="text-sm text-muted-foreground">Loading verified releases…</p>}
-    {!loading&&!error&&!upcoming.length&&<p className="text-sm text-muted-foreground">No upcoming events were returned for the covered period; this is not a complete global economic calendar.</p>}
+    {!loading&&!error&&!upcoming.length&&<p className="text-sm text-muted-foreground">No upcoming verified events were returned for the covered period. This is not a complete global calendar.</p>}
     {upcoming.map(e=>{
      const mins=(Date.parse(e["scheduledAt"])-now)/60000;
      return <article key={e.id} className="rounded-xl border border-border bg-card/70 p-4">
-      <div className="flex flex-wrap justify-between gap-2"><span className="text-xs font-semibold text-amber-400">HIGH IMPACT · USD</span><span className="font-mono text-xs">{countdown(e["scheduledAt"],now)}</span></div>
+      <div className="flex flex-wrap justify-between gap-2"><span className="text-xs font-semibold text-amber-400">HIGH IMPACT · {e.currency}</span><span className="font-mono text-xs">{countdown(e["scheduledAt"],now)}</span></div>
       <h4 className="mt-1 font-semibold">{e.event}</h4>
       <p className="mt-2 text-sm"><strong>{eat.format(new Date(e["scheduledAt"]))} EAT</strong> <span className="text-muted-foreground">({utctime.format(new Date(e["scheduledAt"]))} UTC)</span></p>
-      <p className="mt-1 text-xs text-muted-foreground">{e.period||"Scheduled release"} · Previous: {e.previous??"Not provided"} · Actual: {e.actual??"Pending"} · Consensus: not available</p>
-      <p className="mt-2 text-xs">Potentially affected: EURUSD, GBPUSD, USDJPY, XAUUSD, DXY, U.S. equity indices</p>
+      <p className="mt-1 text-xs text-muted-foreground">{e.period||"Scheduled release"} · Previous: {e.previous??"Not provided"} · Actual: {e.actual??"Pending"} · Consensus: {e.forecast??"Not provided"}</p>
+      <p className="mt-2 text-xs">Potentially affected: {e.affected.slice(0,8).join(", ")}</p>
       <p className="mt-2 text-xs text-muted-foreground">{mins>60?"Monitor H1 / M15 before release":mins>0?"News proximity: volatility and spread risk elevated":"Wait for confirmed post-release candles"} · No pre-news trade direction</p>
      </article>;
     })}
@@ -94,7 +94,7 @@ export function PreNewsCalendar(){
     <div className="rounded-xl border border-border bg-card/70 p-4">
      <h4 className="font-semibold">{selected} · Scenario map</h4>
      <p className="mt-2 text-sm">{upcoming[0]?.scenarios?.[selected]??"Direction depends on surprise, rates and risk sentiment. No directional forecast available."}</p>
-     <p className="mt-3 text-xs text-muted-foreground">This describes potential reaction **after** actual figures become available; the sign, size and duration are unknown beforehand.</p>
+     <p className="mt-3 text-xs text-muted-foreground">This describes a potential reaction after actual figures become available; the sign, size and duration are unknown beforehand.</p>
     </div>
     <div className="rounded-xl border border-border bg-card/70 p-4">
      <h4 className="font-semibold">Relevant analysis timeframes</h4>
