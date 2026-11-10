@@ -1,0 +1,18 @@
+name: Verify Telegram command center
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test-telegram-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run Telegram Worker unit tests
+        run: node --test telegram-service/worker.test.mjs
+      - name: Validate bundled Telegram Worker
+        run: npx --yes wrangler@4 deploy --config telegram-service/wrangler.jsonc --dry-run --outdir /tmp/apex-telegram-bundle

@@ -36,32 +36,251 @@ async function requestBody(request) {
   if(!value||typeof value!=="object"||Array.isArray(value))throw Error("Expected JSON object");
   return value;
 }
-async function privateMessage(message, env) {
-  const chat=message.chat??{}, from=message.from??{};
-  if(chat.type!=="private" || !/^\d{2,20}$/.test(String(chat.id??""))
-      || String(chat.id)!==String(from.id??""))return;
-  const chatId=String(chat.id), telegramId=String(from.id);
-  const input=str(message.text).split(/\s+/)[0].toLowerCase().replace(/@.*$/,"");
-  if(!["/start","/stop","/status","/help"].includes(input))return;
-  if(input==="/help"){
-    await telegram(env,"sendMessage",{chat_id:chatId,text:"TradePulse alerts bot\n/start — subscribe\n/stop — unsubscribe\n/status — check subscription\nAlerts are informational, not trade orders."});
-    return;
-  }
-  const db=env.TRADEPULSE_DB;
-  if(input==="/start"){
-    // Existing website-based subscriber rows may already contain the same Telegram ID.
-    // Preserve their user_id and activate rather than claiming another identity.
-    await db.prepare("INSERT INTO telegram_subscriptions (user_id, telegram_chat_id, telegram_user_id, enabled, linked_at) VALUES (?,?,?,1,?) ON CONFLICT(telegram_user_id) DO UPDATE SET enabled=1, telegram_chat_id=excluded.telegram_chat_id, linked_at=excluded.linked_at")
-      .bind("tg:"+telegramId,chatId,telegramId,new Date().toISOString()).run();
-    await telegram(env,"sendMessage",{chat_id:chatId,text:"✅ Subscribed to TradePulse Telegram alerts. No API token or website login required. Send /stop anytime. Alerts will start when the external signal publisher is activated."});
-  }else if(input==="/stop"){
-    await db.prepare("UPDATE telegram_subscriptions SET enabled=0 WHERE telegram_user_id=?").bind(telegramId).run();
-    await telegram(env,"sendMessage",{chat_id:chatId,text:"TradePulse alerts stopped. Send /start to subscribe again."});
-  }else{
-    const r=await db.prepare("SELECT enabled FROM telegram_subscriptions WHERE telegram_user_id=?").bind(telegramId).first();
-    await telegram(env,"sendMessage",{chat_id:chatId,text:r?.enabled===1?"✅ Your TradePulse alerts subscription is active.":"You are not subscribed. Send /start to join."});
-  }
+const COMMANDS = [
+ ["start","Start APEX bot and subscribe to alerts"],["help","Commands and usage"],["menu","Open interactive signal menu"],
+ ["status","View bot and signal-source status"],["signal","Latest confirmed index signal"],["analyze","Analyze last confirmed index setup"],
+ ["price","Fetch a Deriv market price"],["watchlist","View monitored instruments"],["news","Economic news availability"],
+ ["mode","View signal-only mode"],["account","Broker account availability"],["positions","Broker positions availability"],
+ ["close","Broker order closure availability"],["risk","Signal risk safeguards"],["performance","Signal statistics"],
+ ["history","Recent confirmed signals"],["dailypl","Broker P/L availability"],["drawdown","Broker drawdown availability"],
+ ["pause","Pause personal Telegram alerts"],["resume","Resume personal Telegram alerts"],
+ ["autotrading","Autotrading availability"],["alerts","Personal alert subscription"],["settings","Signal bot settings"],
+ ["report","Recent signal activity report"],["confirm","Transaction confirmation availability"],
+ ["cancel","Cancel pending requests"],["support","Help and diagnostics"],["stop","Unsubscribe from Telegram alerts"],
+];
+const COMMAND_MENU = {
+ inline_keyboard:[
+  [{text:"📊 Latest signal",callback_data:"cmd:signal"},{text:"💹 Price",callback_data:"cmd:price"}],
+  [{text:"🔎 Analyze",callback_data:"cmd:analyze"},{text:"📋 Watchlist",callback_data:"cmd:watchlist"}],
+  [{text:"🔔 Alerts",callback_data:"cmd:alerts"},{text:"📈 Report",callback_data:"cmd:report"}],
+  [{text:"⚙️ Status",callback_data:"cmd:status"},{text:"❓ Help",callback_data:"cmd:help"}],
+ ],
+};
+const HELP = "APEX TRADING BOT · Signal-only\n\n"+COMMANDS.map(([command,detail])=>"/"+command+" — "+detail).join("\n")+
+ "\n\nExamples: /price EURUSD, /price XAUUSD, /signal, /history\nSignals are not trade orders. No broker account is connected to this Telegram Worker.";
+const sendText = (env,chatId,text,menu=false) => telegram(env,"sendMessage",{
+ chat_id:chatId,text,disable_web_page_preview:true,...(menu?{reply_markup:COMMAND_MENU}:{})
+});
+async function subscription(env,id) {
+ const row=await env.TRADEPULSE_DB.prepare("SELECT enabled FROM telegram_subscriptions WHERE telegram_user_id=?")
+  .bind(id).first();
+ return row?.enabled===1;
 }
+async function setSubscription(env,id,chatId,on) {
+ if(on) {
+  await env.TRADEPULSE_DB.prepare("INSERT INTO telegram_subscriptions (user_id,telegram_chat_id,telegram_user_id,enabled,linked_at) VALUES (?,?,?,1,?) ON CONFLICT(telegram_user_id) DO UPDATE SET enabled=1,telegram_chat_id=excluded.telegram_chat_id,linked_at=excluded.linked_at")
+   .bind("tg:"+id,chatId,id,new Date().toISOString()).run();
+ } else {
+  await env.TRADEPULSE_DB.prepare("UPDATE telegram_subscriptions SET enabled=0 WHERE telegram_user_id=?").bind(id).run();
+ }
+}
+const FINANCE_UNAVAILABLE = "Broker functions are not connected to this signal-only Telegram service. No positions, account equity or execution credentials are available. Nothing was traded or changed.";
+async function recentAlerts(env,limit=5) {
+ const out=await env.TRADEPULSE_DB.prepare(
+  "SELECT id,symbol,deriv_symbol,strategy,direction,timeframe,candle_time,created_at,expires_at,entry,stop_loss,tp1,tp2,rr,quality_score FROM index_alerts ORDER BY created_at DESC LIMIT ?"
+ ).bind(limit).all();
+ return out.results??[];
+}
+function alertDescription(a) {
+ const time=Number(a.candle_time);
+ const expiry=a.expires_at==null?null:Number(a.expires_at);
+ const historical=expiry!=null && Date.now()>expiry || !Number.isFinite(time) || Date.now()-time>2*3600000;
+ return (historical?"HISTORICAL — NOT ACTIONABLE\n":"")+
+  a.symbol+" "+a.direction+" · "+a.timeframe+"\nStrategy: "+a.strategy+
+  "\nEntry: "+a.entry+" | SL: "+a.stop_loss+
+  "\nTP1: "+a.tp1+" | TP2: "+a.tp2+"\nR:R: "+Number(a.rr).toFixed(2)+
+  " | Setup score: "+a.quality_score+" / 100 (not win probability)"+
+  "\nCandle: "+new Date(time).toISOString();
+}
+const PRICE_SYMBOLS = Object.freeze({
+ EURUSD:"frxEURUSD",GBPUSD:"frxGBPUSD",USDJPY:"frxUSDJPY",
+ GBPJPY:"frxGBPJPY",XAUUSD:"frxXAUUSD",BTCUSD:"cryBTCUSD",
+});
+async function fetchDerivPrice(underlying) {
+ // Public Deriv WebSocket market-data endpoint; no user API token.
+ const res=await fetch("https://api.derivws.com/trading/v1/options/ws/public",{headers:{Upgrade:"websocket"}});
+ const ws=res.webSocket;
+ if(!ws) throw Error("Deriv price WebSocket unavailable");
+ ws.accept();
+ try {
+  const received=await new Promise((resolve,reject)=>{
+   const timeout=setTimeout(()=>{cleanup();reject(Error("Price source timeout"));},9000);
+   function cleanup(){clearTimeout(timeout);ws.removeEventListener("message",message);ws.removeEventListener("error",failure);ws.removeEventListener("close",failure);}
+   function failure(){cleanup();reject(Error("Deriv price source disconnected"));}
+   function message(event){
+    try {
+     const result=JSON.parse(String(event.data));
+     if(result.req_id!==1)return;
+     cleanup();
+     if(result.error)return reject(Error("Deriv quote not available"));
+     resolve(result);
+    } catch {/* Reject malformed data only after timeout. */}
+   }
+   ws.addEventListener("message",message);
+   ws.addEventListener("error",failure);
+   ws.addEventListener("close",failure);
+   ws.send(JSON.stringify({ticks_history:underlying,end:"latest",count:1,style:"ticks",req_id:1}));
+  });
+  const data=received;
+  const price=Number(data.history?.prices?.at(-1));
+  const time=Number(data.history?.times?.at(-1));
+  if(!Number.isFinite(price)||price<=0||!Number.isFinite(time)||Math.abs(Date.now()-time*1000)>180000)
+   throw Error("No sufficiently fresh price is available");
+  return {price,time};
+ } finally {try{ws.close(1000,"Quote received");}catch{}}
+}
+async function fetchDerivCandles(underlying) {
+ const res=await fetch("https://api.derivws.com/trading/v1/options/ws/public",{headers:{Upgrade:"websocket"}});
+ const ws=res.webSocket;
+ if(!ws)throw Error("Deriv candles unavailable");
+ ws.accept();
+ try{
+  const raw=await new Promise((resolve,reject)=>{
+   const timer=setTimeout(()=>{cleanup();reject(Error("Deriv candle request timeout"));},9000);
+   function cleanup(){clearTimeout(timer);ws.removeEventListener("message",onMessage);ws.removeEventListener("error",onError);ws.removeEventListener("close",onError);}
+   function onError(){cleanup();reject(Error("Deriv disconnected"));}
+   function onMessage(event){
+    try {
+     const data=JSON.parse(String(event.data));
+     if(data.req_id!==1)return;
+     cleanup();
+     if(data.error)return reject(Error("Deriv candle data refused"));
+     resolve(data);
+    }catch{/* Invalid or unrelated frame: request still times out safely. */}
+   }
+   ws.addEventListener("message",onMessage);
+   ws.addEventListener("error",onError);
+   ws.addEventListener("close",onError);
+   ws.send(JSON.stringify({ticks_history:underlying,count:120,end:"latest",style:"candles",granularity:3600,req_id:1}));
+  });
+  const candles=raw.candles;
+  if(!Array.isArray(candles))throw Error("No candles");
+  const now=Date.now();
+  const valid=candles.map(c=>({
+   time:Number(c.epoch)*1000,open:Number(c.open),high:Number(c.high),
+   low:Number(c.low),close:Number(c.close)
+  })).filter(c=>[c.time,c.open,c.high,c.low,c.close].every(Number.isFinite)&&
+   c.time>0&&c.low>0&&c.high>=Math.max(c.open,c.close,c.low)&&c.low<=Math.min(c.open,c.close)&&
+   c.time+3600000<=now).sort((a,b)=>a.time-b.time);
+  if(valid.length<60)throw Error("Not enough completed candles");
+  const unique=valid.filter((c,i)=>i===0||c.time!==valid[i-1].time);
+  if(unique.length<60||now-(unique.at(-1).time+3600000)>2*3600000)
+   throw Error("Candle data unavailable or stale");
+  return unique;
+ }finally{try{ws.close(1000,"OHLC fetched");}catch{}}
+}
+function calculateEMA(values,period){
+ let ema=values.slice(0,period).reduce((a,b)=>a+b,0)/period;
+ for(const x of values.slice(period))ema=x*(2/(period+1))+ema*(1-2/(period+1));
+ return ema;
+}
+function analyzeCandles(symbol,candles){
+ const latest=candles.at(-1);
+ const closes=candles.map(c=>c.close);
+ const ema20=calculateEMA(closes,20),ema50=calculateEMA(closes,50);
+ const prior=candles.slice(-21,-1);
+ const high=Math.max(...prior.map(c=>c.high)),low=Math.min(...prior.map(c=>c.low));
+ const body=Math.abs(latest.close-latest.open);
+ const range=latest.high-latest.low;
+ const trend=latest.close>ema20&&ema20>ema50?"UPTREND":
+  latest.close<ema20&&ema20<ema50?"DOWNTREND":"MIXED";
+ const structure=latest.close>high?"Closed above 20-candle range high":
+  latest.close<low?"Closed below 20-candle range low":"Inside previous 20-candle range";
+ return "APEX On-Demand H1 Analysis · "+symbol+
+  "\nLast confirmed close: "+latest.close+
+  "\nCandle closed: "+new Date(latest.time+3600000).toISOString()+
+  "\nEMA20: "+ema20.toFixed(5)+" | EMA50: "+ema50.toFixed(5)+
+  "\nTrend classification: "+trend+
+  "\n20-candle structure: "+structure+
+  "\nLast candle: "+(latest.close>latest.open?"bullish":latest.close<latest.open?"bearish":"doji")+
+  ", body "+(range>0?(body/range*100).toFixed(0):"0")+"% of range"+
+  "\n\nTechnical context only — NOT a BUY/SELL signal or guarantee of profitability.";
+}
+async function commandReply(env,chatId,id,cmd,args) {
+ const db=env.TRADEPULSE_DB;
+ if(cmd==="start"||cmd==="resume") {
+  await setSubscription(env,id,chatId,true);
+  return sendText(env,chatId,"✅ APEX signal alerts enabled for this chat.\nUse /menu, /signal or /price EURUSD.\nTrading execution is not connected.",true);
+ }
+ if(cmd==="stop"||cmd==="pause") {
+  await setSubscription(env,id,chatId,false);
+  return sendText(env,chatId,"🔕 Personal Telegram alerts paused. Send /resume to enable again.\nChannel broadcasts are managed separately.");
+ }
+ if(cmd==="menu")return sendText(env,chatId,"APEX Signal Command Center\nChoose a function:",true);
+ if(cmd==="help")return sendText(env,chatId,HELP);
+ if(cmd==="status") {
+  const enabled=await subscription(env,id);
+  const latest=await recentAlerts(env,1).catch(()=>[]);
+  return sendText(env,chatId,"APEX bot: online\nAlerts to this chat: "+(enabled?"enabled":"paused")+
+    "\nIndex signal database: "+(latest?"accessible":"unavailable")+
+    "\nLatest recorded index signal: "+(latest[0]?new Date(latest[0].created_at).toISOString():"none")+
+    "\nBroker connection: not configured\nTrading mode: signal-only");
+ }
+ if(cmd==="alerts"||cmd==="settings") {
+  const enabled=await subscription(env,id);
+  return sendText(env,chatId,"Personal Telegram alerts: "+(enabled?"ON":"OFF")+
+   "\n/start or /resume — enable\n/pause or /stop — disable\nChannel posts depend on the channel configuration and available confirmed signals.");
+ }
+ if(cmd==="analyze"){
+  const symbol=(args[0]||"EURUSD").toUpperCase().replace("/","");
+  const underlying=PRICE_SYMBOLS[symbol];
+  if(!underlying)return sendText(env,chatId,"Unsupported analysis symbol. Try /analyze EURUSD, GBPUSD, USDJPY, GBPJPY, XAUUSD or BTCUSD.");
+  try{return sendText(env,chatId,analyzeCandles(symbol,await fetchDerivCandles(underlying)));}
+  catch{return sendText(env,chatId,"A current, valid H1 analysis is unavailable for "+symbol+". No trade signal was generated.");}
+ }
+ if(cmd==="signal"||cmd==="history"||cmd==="report"||cmd==="performance") {
+  let rows;
+  try {rows=await recentAlerts(env,cmd==="history"||cmd==="report"?5:1);}
+  catch {return sendText(env,chatId,"Index alerts database is unavailable. No signal can be confirmed.");}
+  if(!rows.length)return sendText(env,chatId,"No confirmed index signals have been recorded yet. Nothing to trade. /price EURUSD can check a fresh market quote.");
+  if(cmd==="performance")return sendText(env,chatId,"Recorded index signals: historical entries are available, but verified trading outcomes, win rate and profitability statistics are NOT tracked by this bot. /history shows recent signals.");
+  if(cmd==="report")return sendText(env,chatId,"APEX Index Signal Activity (last "+rows.length+" records)\n\n"+rows.map(a=>a.symbol+" "+a.direction+" "+a.timeframe+" · "+new Date(a.candle_time).toISOString()).join("\n")+"\n\nThese are alerts, not executed trades.");
+
+  return sendText(env,chatId,(cmd==="history"?"Recent Index Signals\n\n":"Latest Index Signal\n\n")+rows.map(alertDescription).join("\n\n"));
+ }
+ if(cmd==="watchlist")return sendText(env,chatId,
+  "Scheduled index scanner: open Deriv stock indices, M15 with higher-timeframe context.\nOn-demand prices: EURUSD, GBPUSD, USDJPY, GBPJPY, XAUUSD, BTCUSD.\nUse /price EURUSD.\nPrice symbols are not guaranteed to be open or available.");
+ if(cmd==="price") {
+  const symbol=(args[0]||"EURUSD").toUpperCase().replace("/","");
+  const underlying=PRICE_SYMBOLS[symbol];
+  if(!underlying)return sendText(env,chatId,"Unknown or unsupported price symbol. Try /price EURUSD, GBPUSD, USDJPY, GBPJPY, XAUUSD or BTCUSD.");
+  try {
+   const q=await fetchDerivPrice(underlying);
+   return sendText(env,chatId,symbol+" · Deriv last available tick: "+q.price+
+     "\nTime: "+new Date(q.time*1000).toISOString()+"\nIndicative historical tick, not a guaranteed executable bid/ask quote.");
+  } catch {
+   return sendText(env,chatId,"No verified fresh Deriv quote for "+symbol+" right now. Price unavailable; do not treat old quotes as live.");
+  }
+ }
+ if(cmd==="risk")return sendText(env,chatId,
+  "Index scanner quality gates: completed candles, regime and H1 direction checks, minimum stressed 1:2 reward/risk. Cost assumptions are estimates, not measured spreads.\nNo real-money account risk limits are enforced by this signal-only bot.");
+ if(cmd==="mode"||cmd==="autotrading")return sendText(env,chatId,
+  "Mode: SIGNALS ONLY. Auto-scanning may generate notifications, but automatic order placement is unavailable. No brokerage execution controls are connected.");
+ if(cmd==="news")return sendText(env,chatId,
+  "Live economic news feed is not connected. No current economic-calendar events can be verified inside this bot. Do not interpret this as no upcoming news.");
+ if(["account","positions","close","dailypl","drawdown"].includes(cmd))return sendText(env,chatId,FINANCE_UNAVAILABLE);
+ if(cmd==="confirm"||cmd==="cancel")return sendText(env,chatId,"No pending trade or account action exists. This service never executes trades.");
+ if(cmd==="support")return sendText(env,chatId,
+  "Commands: /help, /menu, /status, /signal, /price EURUSD, /alerts.\nIf the bot does not reply, confirm Telegram webhook points to /telegram/webhook and the webhook secret matches.\nNo API secrets should be sent in chat.");
+ return sendText(env,chatId,"Unknown command. Send /help.");
+}
+async function privateMessage(message,env) {
+ const chat=message.chat??{},from=message.from??{};
+ if(chat.type!=="private"||!/^\d{2,20}$/.test(String(chat.id??""))||String(chat.id)!==String(from.id??""))return;
+ const parts=str(message.text).trim().split(/\s+/);
+ const cmd=parts[0]?.toLowerCase().replace(/@.*$/,"").replace(/^\//,"");
+ if(!str(message.text).trim().startsWith("/")||!cmd)return;
+ return commandReply(env,String(chat.id),String(from.id),cmd,parts.slice(1));
+}
+async function callbackMessage(callback,env) {
+ const message=callback.message;
+ const id=String(callback.from?.id??"");
+ if(!/^cmd:[a-z]+$/.test(str(callback.data)))return;
+ if(message?.chat?.type!=="private"||String(message.chat.id)!==id)return;
+ await telegram(env,"answerCallbackQuery",{callback_query_id:callback.id});
+ return commandReply(env,id,id,callback.data.slice(4),[]);
+}
+
 function alertFrom(value) {
   if(!value || typeof value!=="object" || Array.isArray(value))return null;
   const {id,symbol,strategy,direction,timeframe,entry,stopLoss,tp1,tp2,rr,candleTime}=value;
@@ -108,8 +327,44 @@ export default {
     try {
       const update=await requestBody(request);
       if(update.message)await privateMessage(update.message,env);
+      if(update.callback_query)await callbackMessage(update.callback_query,env);
       return respond({ok:true});
     }catch(e){return respond({error:"Telegram webhook handling failed"},503);}
+  }
+  if(url.pathname==="/admin/setup"||url.pathname==="/admin/webhook-status"){
+    if(request.method!=="POST")return respond({error:"Method not allowed"},405);
+    const authorization=request.headers.get("Authorization")??"";
+    if(!await verifySecret(authorization.startsWith("Bearer ")?authorization.slice(7):"",env.TRADEPULSE_PUBLISH_SECRET))
+      return respond({error:"Unauthorized"},401);
+    if(!botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN)||!env.TELEGRAM_WEBHOOK_SECRET||!hasDb(env))
+      return respond({error:"Bot, D1 or webhook secret missing"},503);
+    try {
+      if(url.pathname==="/admin/webhook-status"){
+        const info=await telegram(env,"getWebhookInfo",{});
+        return respond({
+          url:info.url??null,pending_update_count:info.pending_update_count??0,
+          last_error_message:info.last_error_message??null,last_error_date:info.last_error_date??null,
+          expected_url:new URL("/telegram/webhook",url.origin).toString(),
+          // The expected secret is deliberately not returned.
+          webhook_matches:info.url===new URL("/telegram/webhook",url.origin).toString(),
+        });
+      }
+      const destination=new URL("/telegram/webhook",url.origin);
+      if(destination.protocol!=="https:"||!destination.hostname.endsWith(".workers.dev"))
+        return respond({error:"Only HTTPS workers.dev webhook registration is supported"},400);
+      await telegram(env,"setWebhook",{
+        url:destination.toString(),
+        secret_token:env.TELEGRAM_WEBHOOK_SECRET,
+        allowed_updates:["message","callback_query"],
+        drop_pending_updates:false,
+      });
+      await telegram(env,"setMyCommands",{
+        commands:COMMANDS.filter(([c])=>c!=="stop").map(([command,description])=>({command,description:description.slice(0,100)})),
+        scope:{type:"default"},
+      });
+      const info=await telegram(env,"getWebhookInfo",{});
+      return respond({configured:true,webhook_matches:info.url===destination.toString(),pending_update_count:info.pending_update_count??0});
+    }catch{return respond({error:"Telegram webhook or command registration failed"},503);}
   }
   if(url.pathname==="/publish"||url.pathname==="/admin/test"){
     if(request.method!=="POST")return respond({error:"Method not allowed"},405);

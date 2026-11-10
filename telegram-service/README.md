@@ -73,3 +73,59 @@ Example values are illustrative, not current prices or trade recommendations. Ti
 - Do not expose `TRADEPULSE_PUBLISH_SECRET` to a browser. A real market-data scanner must run in a trusted server environment.
 - Avoid manually testing with real-looking trade signals; use `/admin/test` for delivery checks.
 - There is no direct transmission of user account details from TradePulse. Telegram user subscriptions are separate from website authentication.
+
+
+## APEX Telegram command center (2026-11-10)
+
+The Telegram Worker can now handle /start, /help, /menu, /status, /signal,
+/analyze, /price, /watchlist, /news, /mode, /account, /positions, /close,
+/risk, /performance, /history, /dailypl, /drawdown, /pause, /resume,
+/autotrading, /alerts, /settings, /report, /confirm, /cancel, /support
+(and /stop). Buttons use Telegram inline callback queries.
+
+- /signal and /history use confirmed index signals in the shared D1 index_alerts table.
+  They do not manufacture missing signals, and old signals are marked historical.
+- /price SYMBOL fetches a fresh public Deriv tick for a limited validated symbol
+  set (EURUSD, GBPUSD, USDJPY, GBPJPY, XAUUSD, BTCUSD).
+- /analyze SYMBOL fetches completed H1 candles, calculates EMA20/EMA50,
+  candle body and previous 20-candle range breakout. This is context,
+  **not** an executable signal or a profitable-strategy guarantee.
+- /status and /alerts report personal subscription status; /pause and
+  /resume only affect private bot notifications, not separate channel broadcasts.
+- /news, /account, /positions, /close, /dailypl, /drawdown, /autotrading,
+  and unverified performance statistics report accurate limitations.
+  No broker account or trade executor is connected to this Worker.
+
+**Important: deploying code alone cannot restore /start replies.**
+Telegram sends updates only to its registered webhook. After
+the Telegram Worker is deployed with valid bot, D1 and secrets,
+register the new webhook and menu commands through the authenticated
+\`POST /admin/setup\` endpoint. This endpoint invokes Telegram's
+\`setWebhook\` with \`secret_token\` and \`setMyCommands\`. It is intentionally
+inaccessible without the private \`TRADEPULSE_PUBLISH_SECRET\`.
+
+A trusted terminal can run this without placing credentials in shell history
+or GitHub. **Do not paste the credential or complete output into chat**:
+
+\`\`\`bash
+read -s "SECRET?Paste Cloudflare publishing secret (hidden): "
+echo
+curl -fsS -X POST \
+  -H "Authorization: Bearer \${SECRET}" \
+  "https://tradepulse-telegram-service.davidmwesigwa71.workers.dev/admin/setup"
+unset SECRET
+\`\`\`
+
+On zsh, the \`read -s "SECRET?Prompt"\` syntax is supported. For
+a shell-independent alternative, \`read -s SECRET\` works where implemented.
+
+The authorized \`POST /admin/webhook-status\` endpoint returns the current
+webhook URL and pending update count without revealing the bot token or secret.
+After setup, send \`/start\` in the bot's private Telegram chat and check the
+\`/telegram/webhook\` requests in Worker Observability.
+
+The deploy workflow \`.github/workflows/deploy-apex-telegram-commands.yml\`
+deploys **only** \`tradepulse-telegram-service\` when the Telegram Worker source
+is merged into main, reusing \`CLOUDFLARE_API_TOKEN\` from GitHub Secrets.
+It does not target the main website or Deriv index scanner. Cloudflare secrets
+and the existing D1 binding must remain configured in the Telegram Worker.

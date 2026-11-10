@@ -10,5 +10,13 @@
       "database_name": "tradepulse-telegram",
       "database_id": "3d9bb1bf-f57f-4ec1-b60f-f0f5a62204d6"
     }
-  ]
+  ],
+  "keep_vars": true,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true
+    }
+  }
 }
