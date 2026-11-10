@@ -16,6 +16,27 @@ const ENABLED_KEY = "tradepulse-index-enabled-v1";
 const INTERVAL_MS = 5 * 60 * 1000;
 const MAX_ALERTS = 100;
 const SCAN_TIMEFRAME: Timeframe = "M15";
+const REMOTE_ALERT_URL = import.meta.env.VITE_INDEX_ALERTS_URL as string | undefined;
+type RemoteAlert = {
+  id: string; symbol: string; strategy: string; direction: "BUY" | "SELL";
+  timeframe: Timeframe; candle_time: number; expires_at: number | null;
+  entry: number; stop_loss: number; tp1: number; tp2: number;
+};
+function asRemoteAlert(x: unknown): RemoteAlert | null {
+  if (!x || typeof x !== "object") return null;
+  const a = x as Record<string, unknown>;
+  if (typeof a.id !== "string" || typeof a.symbol !== "string" ||
+      typeof a.strategy !== "string" || (a.direction !== "BUY" && a.direction !== "SELL") ||
+      a.timeframe !== "M15" && a.timeframe !== "H1" ||
+      ![a.candle_time, a.entry, a.stop_loss, a.tp1, a.tp2].every(v=>typeof v==="number"&&Number.isFinite(v))) return null;
+  return {
+    id:a.id,symbol:a.symbol,strategy:a.strategy,direction:a.direction,
+    timeframe:a.timeframe as Timeframe,candle_time:a.candle_time as number,
+    expires_at:typeof a.expires_at==="number"?a.expires_at:null,
+    entry:a.entry as number,stop_loss:a.stop_loss as number,
+    tp1:a.tp1 as number,tp2:a.tp2 as number,
+  };
+}
 
 function readAlerts(): Alert[] {
   if (typeof window === "undefined") return [];
@@ -60,6 +81,42 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
       return next;
     });
   }, []);
+
+  // Server-generated market alerts are shared across devices; browser-specific read state stays local.
+  useEffect(() => {
+    if (!REMOTE_ALERT_URL) return;
+    const ctrl = new AbortController();
+    const sync = async () => {
+      try {
+        const resp=await fetch(REMOTE_ALERT_URL,{signal:ctrl.signal,cache:"no-store"});
+        if (!resp.ok) throw Error("Cloud index alert feed unavailable");
+        const payload: unknown=await resp.json();
+        if (!payload || typeof payload!=="object") return;
+        const rows=(payload as {alerts?:unknown}).alerts;
+        if(!Array.isArray(rows)) return;
+        const incoming=rows.map(asRemoteAlert).filter((x):x is RemoteAlert=>x!==null);
+        save(prev=>{
+          const seen=new Map(prev.map(a=>[a.id,a]));
+          for(const a of incoming) {
+            if(seen.has(a.id)) continue;
+            seen.set(a.id,{
+              id:a.id,symbol:a.symbol,name:a.symbol,action:a.direction,
+              strategy:a.strategy,timeframe:a.timeframe,at:a.candle_time,
+              expiresAt:a.expires_at,entry:a.entry,stopLoss:a.stop_loss,
+              tp1:a.tp1,tp2:a.tp2,read:false,
+            });
+            knownIds.current.add(a.id);
+          }
+          return [...seen.values()].sort((a,b)=>b.at-a.at).slice(0,MAX_ALERTS);
+        });
+      } catch(e) {
+        if(!ctrl.signal.aborted) console.warn("Cloud index alerts are temporarily unavailable",e);
+      }
+    };
+    void sync();
+    const timer=window.setInterval(()=>{void sync();},60_000);
+    return ()=>{ctrl.abort();window.clearInterval(timer);};
+  },[save]);
 
   const scan = useCallback(async (signal: AbortSignal) => {
     if (signal.aborted || !indices.length || scanning.current) return;
@@ -148,7 +205,7 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
           <h2 className="font-display font-bold">INDEX SIGNAL ALERTS</h2>
           <button className="text-xs text-muted-foreground" onClick={() => setOpened(false)} aria-label="Close notifications">✕</button>
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">Automatic M15 index checks every 5 minutes while this dashboard is open. Confirmed signals only; no trade execution.</p>
+        <p className="mt-1 text-xs text-muted-foreground">Automatic M15 index checks while open. When the optional cloud alert service is connected, confirmed signals also sync from background scans. No trade execution.</p>
         <label className="mt-4 flex items-center justify-between gap-2 text-xs">
           <span>Automatic monitoring {enabled ? "ON" : "OFF"}</span>
           <input type="checkbox" checked={enabled} onChange={toggle} aria-label="Enable automatic index alerts" />
@@ -178,6 +235,7 @@ export function IndexNotificationCenter({ markets }: { markets: DerivMarket[] })
             <p className="mt-2 font-mono">Entry {a.entry} · SL {a.stopLoss}</p>
             <p className="font-mono">TP1 {a.tp1} · TP2 {a.tp2}</p>
             {a.expiresAt != null && <p className="mt-1 text-muted-foreground">Expires: {new Date(a.expiresAt).toLocaleTimeString()}</p>}
+            {a.expiresAt != null && Date.now()>a.expiresAt && <p className="mt-1 text-warn">Historical alert · expired (not actionable)</p>}
             {!a.read && <button className="mt-2 underline" onClick={() => save((prev) => prev.map((x) => x.id === a.id ? { ...x, read: true } : x))}>Mark as read</button>}
           </article>)}
         </div>
