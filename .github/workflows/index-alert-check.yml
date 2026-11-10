@@ -1,0 +1,21 @@
+name: Validate index alert Worker
+on:
+  pull_request:
+    paths:
+      - 'index-alert-service/**'
+      - 'src/lib/index-signal-engine.ts'
+      - 'src/lib/index-signal-quality.ts'
+      - '.github/workflows/index-alert-check.yml'
+permissions:
+  contents: read
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --legacy-peer-deps --no-audit --no-fund
+      - name: Bundle Worker only (no production deployment)
+        run: npx --yes wrangler@4 deploy --dry-run --config index-alert-service/wrangler.jsonc --outdir /tmp/index-alert-preview
