@@ -22,8 +22,8 @@ function countdown(target:string,now:number){
 function isEvent(x:unknown):x is Event {
  if(!x||typeof x!=="object")return false;
  const e=x as Record<string,unknown>;
- return typeof e.id==="string"&&typeof e.event==="string"&&typeof e.scheduledAt==="string"&&
-   Number.isFinite(Date.parse(e.scheduledAt))&&typeof e.scenarios==="object"&&e.scenarios!==null&&Array.isArray(e.affected);
+ return typeof e["id"]==="string"&&typeof e["event"]==="string"&&typeof e["scheduledAt"]==="string"&&
+   Number.isFinite(Date.parse(e["scheduledAt"]))&&typeof e["scenarios"]==="object"&&e["scenarios"]!==null&&Array.isArray(e["affected"]);
 }
 export function PreNewsCalendar(){
  const [calendar,setCalendar]=useState<Calendar|null>(null);
@@ -33,7 +33,7 @@ export function PreNewsCalendar(){
  const [selected,setSelected]=useState("EURUSD");
  const refresh=async(signal?:AbortSignal)=>{
   try {
-   const response=await fetch(NEWS_URL,{cache:"no-store",signal});
+   const response=await fetch(NEWS_URL,{cache:"no-store",signal:signal??null});
    if(!response.ok)throw Error("Calendar service unavailable");
    const raw:unknown=await response.json();
    if(!raw||typeof raw!=="object"||!("events" in raw))throw Error("Invalid calendar response");
@@ -52,7 +52,7 @@ export function PreNewsCalendar(){
   const polling=setInterval(()=>void refresh(controller.signal),5*60000);
   return ()=>{controller.abort();clearInterval(ticker);clearInterval(polling);};
  },[]);
- const upcoming=(calendar?.events??[]).filter(e=>Date.parse(e.scheduledAt)>now-15*60000).slice(0,20);
+ const upcoming=(calendar?.events??[]).filter(e=>Date.parse(e["scheduledAt"])>now-15*60000).slice(0,20);
  return <section className="space-y-5" aria-label="Economic pre-news monitor">
   <div className="rounded-xl border border-border bg-card/75 p-5 backdrop-blur">
    <div className="flex flex-wrap items-center justify-between gap-3">
@@ -74,11 +74,11 @@ export function PreNewsCalendar(){
     {loading&&!calendar&&<p className="text-sm text-muted-foreground">Loading verified releases…</p>}
     {!loading&&!error&&!upcoming.length&&<p className="text-sm text-muted-foreground">No upcoming events were returned for the covered period; this is not a complete global economic calendar.</p>}
     {upcoming.map(e=>{
-     const mins=(Date.parse(e.scheduledAt)-now)/60000;
+     const mins=(Date.parse(e["scheduledAt"])-now)/60000;
      return <article key={e.id} className="rounded-xl border border-border bg-card/70 p-4">
-      <div className="flex flex-wrap justify-between gap-2"><span className="text-xs font-semibold text-amber-400">HIGH IMPACT · USD</span><span className="font-mono text-xs">{countdown(e.scheduledAt,now)}</span></div>
+      <div className="flex flex-wrap justify-between gap-2"><span className="text-xs font-semibold text-amber-400">HIGH IMPACT · USD</span><span className="font-mono text-xs">{countdown(e["scheduledAt"],now)}</span></div>
       <h4 className="mt-1 font-semibold">{e.event}</h4>
-      <p className="mt-2 text-sm"><strong>{eat.format(new Date(e.scheduledAt))} EAT</strong> <span className="text-muted-foreground">({utctime.format(new Date(e.scheduledAt))} UTC)</span></p>
+      <p className="mt-2 text-sm"><strong>{eat.format(new Date(e["scheduledAt"]))} EAT</strong> <span className="text-muted-foreground">({utctime.format(new Date(e["scheduledAt"]))} UTC)</span></p>
       <p className="mt-1 text-xs text-muted-foreground">{e.period||"Scheduled release"} · Previous: {e.previous??"Not provided"} · Actual: {e.actual??"Pending"} · Consensus: not available</p>
       <p className="mt-2 text-xs">Potentially affected: EURUSD, GBPUSD, USDJPY, XAUUSD, DXY, U.S. equity indices</p>
       <p className="mt-2 text-xs text-muted-foreground">{mins>60?"Monitor H1 / M15 before release":mins>0?"News proximity: volatility and spread risk elevated":"Wait for confirmed post-release candles"} · No pre-news trade direction</p>
