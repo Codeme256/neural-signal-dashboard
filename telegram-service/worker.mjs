@@ -257,6 +257,41 @@ export default {
       return respond({ok:true});
     }catch(e){return respond({error:"Telegram webhook handling failed"},503);}
   }
+  if(url.pathname==="/admin/setup"||url.pathname==="/admin/webhook-status"){
+    if(request.method!=="POST")return respond({error:"Method not allowed"},405);
+    const authorization=request.headers.get("Authorization")??"";
+    if(!await verifySecret(authorization.startsWith("Bearer ")?authorization.slice(7):"",env.TRADEPULSE_PUBLISH_SECRET))
+      return respond({error:"Unauthorized"},401);
+    if(!botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN)||!env.TELEGRAM_WEBHOOK_SECRET||!hasDb(env))
+      return respond({error:"Bot, D1 or webhook secret missing"},503);
+    try {
+      if(url.pathname==="/admin/webhook-status"){
+        const info=await telegram(env,"getWebhookInfo",{});
+        return respond({
+          url:info.url??null,pending_update_count:info.pending_update_count??0,
+          last_error_message:info.last_error_message??null,last_error_date:info.last_error_date??null,
+          expected_url:new URL("/telegram/webhook",url.origin).toString(),
+          // The expected secret is deliberately not returned.
+          webhook_matches:info.url===new URL("/telegram/webhook",url.origin).toString(),
+        });
+      }
+      const destination=new URL("/telegram/webhook",url.origin);
+      if(destination.protocol!=="https:"||!destination.hostname.endsWith(".workers.dev"))
+        return respond({error:"Only HTTPS workers.dev webhook registration is supported"},400);
+      await telegram(env,"setWebhook",{
+        url:destination.toString(),
+        secret_token:env.TELEGRAM_WEBHOOK_SECRET,
+        allowed_updates:["message","callback_query"],
+        drop_pending_updates:false,
+      });
+      await telegram(env,"setMyCommands",{
+        commands:COMMANDS.filter(([c])=>c!=="stop").map(([command,description])=>({command,description:description.slice(0,100)})),
+        scope:{type:"default"},
+      });
+      const info=await telegram(env,"getWebhookInfo",{});
+      return respond({configured:true,webhook_matches:info.url===destination.toString(),pending_update_count:info.pending_update_count??0});
+    }catch{return respond({error:"Telegram webhook or command registration failed"},503);}
+  }
   if(url.pathname==="/publish"||url.pathname==="/admin/test"){
     if(request.method!=="POST")return respond({error:"Method not allowed"},405);
     const auth=request.headers.get("Authorization")??"";
