@@ -7,6 +7,7 @@ import { parseDerivMarkets, parseDerivOhlc } from "../src/lib/deriv-data";
 import { analyzeIndex } from "../src/lib/index-signal-engine";
 import { TF_SECONDS, HIGHER_TF, type Timeframe } from "../src/lib/strategies/types";
 import { evaluateOutcome } from "../src/lib/signal-tracker";
+import { validateFreshEntry } from "./entry-freshness";
 
 type ScheduledController = { scheduledTime: number };
 type ExecutionContext = { waitUntil(promise: Promise<unknown>): void };
@@ -34,6 +35,7 @@ type Alert = {
 };
 const PUBLIC_WS = "https://api.derivws.com/trading/v1/options/ws/public";
 const MAX_MARKETS = 12;
+const MAX_WATCHES_PER_SCAN=3;
 const MIN_QUALITY = 70;
 const TF: Timeframe = "M15";
 const HIGHER = HIGHER_TF[TF];
@@ -84,7 +86,9 @@ function makeRequester(ws: WebSocket) {
   });
 }
 
-async function publishTelegram(env: Env, a: Alert): Promise<boolean> {
+type Watch={type:"WATCH";id:string;symbol:string;strategy:string;timeframe:Timeframe;
+ candleTime:number;bias:"BULLISH"|"BEARISH";regime:string;createdAt:number};
+async function publishTelegram(env: Env, a: Alert|Watch): Promise<boolean> {
   if (!env.TELEGRAM_PUBLISH_URL || !env.TRADEPULSE_PUBLISH_SECRET) return false;
   const parsed = new URL(env.TELEGRAM_PUBLISH_URL);
   if (parsed.protocol !== "https:" || parsed.pathname !== "/publish") throw Error("Invalid Telegram publish endpoint configuration");
@@ -94,7 +98,7 @@ async function publishTelegram(env: Env, a: Alert): Promise<boolean> {
       "Content-Type": "application/json",
       Authorization: "Bearer " + env.TRADEPULSE_PUBLISH_SECRET,
     },
-    body: JSON.stringify({
+    body: JSON.stringify("type" in a ? a : {
       id: a.id, symbol: a.symbol, strategy: a.strategy,
       direction: a.direction, timeframe: a.timeframe, entry: a.entry,
       stopLoss: a.stop_loss, tp1: a.tp1, tp2: a.tp2,
@@ -189,7 +193,7 @@ async function retryPending(env: Env) {
 async function scheduledScan(env: Env) {
   if (!env.TRADEPULSE_DB) throw Error("Required index alert database binding is missing");
   const ws = await connect();
-  let scanned=0,stored=0,deliveryFailures=0;
+  let scanned=0,stored=0,deliveryFailures=0,watchSent=0,staleSuppressed=0;
   const request=makeRequester(ws);
   try {
     const active=await request({active_symbols:"brief"});
@@ -210,6 +214,25 @@ async function scheduledScan(env: Env) {
           strategy:"all",enabled:["trend"],now,
         });
         scanned++;
+        // Pre-confirmation WATCH: directional context on a completed M15 candle.
+        // No entry/SL/TP and no implied order; recipients see a WATCH label.
+        if(result.action==="WAIT" && result.lastCandleTime!==null &&
+          result.higherTrend!=="NEUTRAL" && result.marketRegime==="TRENDING" &&
+          now-result.lastCandleTime>=0 && now-result.lastCandleTime<=5*60*1000 &&
+          watchSent<MAX_WATCHES_PER_SCAN){
+          const closed=candles.filter(c=>c.time+TF_SECONDS.M15*1000<=now);
+          const last=closed.at(-1);
+          const aligned=last&&(result.higherTrend==="BULLISH"?last.close>last.open:last.close<last.open);
+          if(aligned){
+            const hour=Math.floor(result.lastCandleTime/(60*60*1000));
+            const watch:Watch={type:"WATCH",id:[m.derivSymbol,"WATCH",hour].join(":"),
+             symbol:m.symbol,strategy:"Higher-timeframe trend watch",timeframe:TF,
+             candleTime:result.lastCandleTime,bias:result.higherTrend,
+             regime:result.marketRegime??"UNKNOWN",createdAt:now};
+            try{if(await publishTelegram(env,watch))watchSent++;}
+            catch{deliveryFailures++;}
+          }
+        }
         if (result.action!=="BUY"&&result.action!=="SELL") continue;
         if (result.score<MIN_QUALITY||result.lastCandleTime===null||
             result.entry===null||result.stopLoss===null||
@@ -226,6 +249,22 @@ async function scheduledScan(env: Env) {
           rr:result.riskReward,quality_score:result.score,
           data_source:"Deriv",
         };
+        // Verify the price against a fresh tick BEFORE storing or publishing a new entry.
+        // If the candle signal is late or price has moved >0.25R, do not announce it.
+        let fresh=false;
+        try{
+          const quote=await request({ticks_history:m.derivSymbol,count:1,end:"latest",style:"ticks"});
+          const px=Number((quote.history as {prices?:unknown[]}|undefined)?.prices?.at(-1));
+          const qt=Number((quote.history as {times?:unknown[]}|undefined)?.times?.at(-1))*1000;
+          const verdict=validateFreshEntry({
+           now:Date.now(),candleTime:a.candle_time,expiresAt:a.expires_at,
+           quoteTime:qt,currentPrice:px,entry:a.entry,stopLoss:a.stop_loss,tp1:a.tp1,tp2:a.tp2,
+           direction:a.direction,
+          });
+          fresh=verdict.ok;
+          if(!fresh)console.log("Signal not published: entry no longer timely",m.symbol,verdict.reason);
+        }catch(error){console.warn("Fresh quote unavailable; no entry alert",m.symbol,error instanceof Error?error.message:"Unknown");}
+        if(!fresh){staleSuppressed++;continue;}
         if (!await record(env,a)) continue; // idempotent across scheduled invocations
         stored++;
         try {
@@ -245,7 +284,7 @@ async function scheduledScan(env: Env) {
     try { ws.close(1000,"Scan complete"); } catch { /* disconnected */ }
   }
   try { await retryPending(env); } catch { /* D1 unavailable; retry next run. */ }
-  console.log("Index scheduled scan",{scanned,stored,deliveryFailures});
+  console.log("Index scheduled scan",{scanned,stored,watchSent,staleSuppressed,deliveryFailures});
 }
 
 export default {
