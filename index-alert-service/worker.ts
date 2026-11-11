@@ -124,7 +124,7 @@ const OUTCOME_LIMIT=12;
  */
 async function followUpIssuedAlerts(env:Env) {
  const pending=await env.TRADEPULSE_DB.prepare(
-  "SELECT a.* FROM index_alerts a LEFT JOIN index_alert_outcomes o ON o.alert_id=a.id WHERE o.alert_id IS NULL OR o.closed_at IS NULL ORDER BY a.candle_time ASC LIMIT ?"
+  "SELECT a.* FROM index_alerts a LEFT JOIN index_alert_outcomes o ON o.alert_id=a.id WHERE o.alert_id IS NULL OR o.closed_at IS NULL ORDER BY COALESCE(o.checked_at,0) ASC, a.candle_time DESC LIMIT ?"
  ).bind(OUTCOME_LIMIT).all<FollowUpAlert>();
  if(!(pending.results??[]).length)return;
  const ws=await connect(),request=makeRequester(ws);
@@ -143,7 +143,9 @@ async function followUpIssuedAlerts(env:Env) {
     });
     const candles=parseDerivOhlc(raw.candles)
       .filter(c=>c.time>=a.candle_time&&c.time+step<=now);
-    if(!candles.length)continue;
+    if(!candles.length||candles[0]!.time>a.candle_time)continue;
+    // Missing middle candles hide unknown stop/target ordering: never issue a verified outcome.
+    if(candles.some((c,i)=>i>0&&c.time-candles[i-1]!.time!==step))continue;
     // Do not mark EXPIRED without confirmed OHLC coverage through the 48-candle horizon.
     const expiry=a.candle_time+48*step;
     const lastClosed=candles[candles.length-1]!.time+step;
