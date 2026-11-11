@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { NewsSignalCard } from "./NewsSignalCard";
 import { AlertTriangle, BellRing, CalendarClock, RefreshCw, Search } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { useDerivMarkets } from "@/hooks/use-deriv";
@@ -42,6 +43,12 @@ export function PreNewsCalendar(){
  const [scanning,setScanning]=useState(false);
  const [resultsOpen,setResultsOpen]=useState(false);
  const [scannedEvent,setScannedEvent]=useState<Event|null>(null);
+ const [autoEnabled,setAutoEnabled]=useState(false);
+ const [browserAllowed,setBrowserAllowed]=useState(false);
+ const [autoStage,setAutoStage]=useState<string|null>(null);
+ const [newsNotices,setNewsNotices]=useState<{key:string;eventId:string;symbol:string;message:string;at:number;read:boolean}[]>([]);
+ const seenNotices=useRef(new Set<string>());
+ const scanInFlight=useRef(false);
  const marketsQ=useDerivMarkets();
  const refresh=async(signal?:AbortSignal)=>{
   try {
@@ -68,29 +75,90 @@ export function PreNewsCalendar(){
  const chosenEvent=upcoming.find(e=>e.id===eventId)??upcoming[0]??null;
  const market=marketsQ.data?.find(m=>m.symbol===selected && ["FOREX","METAL","INDEX"].includes(m.category));
  const related=!!chosenEvent?.affected.includes(selected);
- const runNewsScan=async()=>{
-  setScannedEvent(chosenEvent);
+ const runNewsScan=async(eventOverride?:Event,symbolOverride?:string,auto=false,stage:string|null=null)=>{
+  if(scanInFlight.current)return;
+  const targetEvent=eventOverride??chosenEvent;
+  const targetSymbol=symbolOverride??selected;
+  const targetMarket=marketsQ.data?.find(m=>m.symbol===targetSymbol&&["FOREX","METAL","INDEX"].includes(m.category));
+  setAutoStage(auto?stage:null);
+  setScannedEvent(targetEvent);
   setResultsOpen(true);
   setScanError("");setScanResult(null);
-  if(!chosenEvent){setScanError("Select an upcoming verified release first.");return;}
+  if(!targetEvent){setScanError("Select an upcoming verified release first.");return;}
   if(calendar?.stale){setScanError("Economic calendar is stale. Refresh the feed before scanning.");return;}
-  if(!market){setScanError("This instrument is not currently available from the Deriv market feed. Its technical bias cannot be verified.");return;}
-  if(!market.open){setScanError("This market is closed. No fresh technical scan can be produced.");return;}
+  if(!targetMarket){setScanError("This instrument is not currently available from the Deriv market feed. Its technical bias cannot be verified.");return;}
+  if(!targetMarket.open){setScanError("This market is closed. No fresh technical scan can be produced.");return;}
+  scanInFlight.current=true;
   setScanning(true);
   try{
-   const candles=await fetchCandles(market.derivSymbol,"H1");
+   const candles=await fetchCandles(targetMarket.derivSymbol,"H1");
    const snapshot=Date.now();
-   const technical=deriveSignal(candles.map(c=>({time:c.time,value:c.close})),snapshot,market.open);
+   const technical=deriveSignal(candles.map(c=>({time:c.time,value:c.close})),snapshot,targetMarket.open);
    if(!technical.actionable || technical.time===null){
     setScanError("Insufficient or stale completed H1 candles. No verified technical bias is available.");
     return;
    }
-   setScanResult({eventId:chosenEvent.id,symbol:selected,checkedAt:snapshot,technicalBias:technical.direction,
+   setScanResult({eventId:targetEvent.id,symbol:targetSymbol,checkedAt:snapshot,technicalBias:technical.direction,
     ema9:technical.ema9,ema21:technical.ema21,rsi:technical.rsi,note:technical.note,
-    dataTime:technical.time,minutesToRelease:Math.round((Date.parse(chosenEvent.scheduledAt)-snapshot)/60000),
-    fresh:technical.actionable,marketOpen:market.open});
+    dataTime:technical.time,minutesToRelease:Math.round((Date.parse(targetEvent.scheduledAt)-snapshot)/60000),
+    fresh:technical.actionable,marketOpen:targetMarket.open});
   }catch{setScanError("Deriv candle scan failed. Try again when fresh market data is available.");}
-  finally{setScanning(false);}
+  finally{scanInFlight.current=false;setScanning(false);}
+ };
+ useEffect(()=>{
+  try {
+   setAutoEnabled(localStorage.getItem("apex-news-auto-inapp-v1")!=="off");
+   const history=JSON.parse(localStorage.getItem("apex-news-inapp-history-v1")??"[]");
+   const notices=Array.isArray(history)?history.filter((v):v is {key:string;eventId:string;symbol:string;message:string;at:number;read:boolean}=>v&&typeof v.key==="string"&&typeof v.message==="string"&&typeof v.symbol==="string"&&typeof v.eventId==="string"&&typeof v.at==="number"&&typeof v.read==="boolean").slice(0,40):[];
+   setNewsNotices(notices);
+   seenNotices.current=new Set(notices.map(v=>v.key));
+  }catch{/* Storage can be blocked in private mode. */}
+  setBrowserAllowed(typeof Notification!=="undefined"&&Notification.permission==="granted");
+ },[]);
+ useEffect(()=>{
+  if(!autoEnabled||!calendar||calendar.stale||!calendar.events.length||!now||scanInFlight.current)return;
+  const upcomingAlert=calendar.events.find(event=>{
+   const mins=(Date.parse(event.scheduledAt)-now)/60000;
+   const stage=mins>0&&mins<=15?"15m":mins>15&&mins<=60?"60m":null;
+   return stage!==null&&!seenNotices.current.has(event.id+":"+stage);
+  });
+  if(!upcomingAlert)return;
+  const mins=(Date.parse(upcomingAlert.scheduledAt)-now)/60000;
+  const stage=mins<=15?"15m":"60m";
+  const key=upcomingAlert.id+":"+stage;
+  seenNotices.current.add(key);
+  const target=upcomingAlert.affected.includes(selected)?selected:
+    upcomingAlert.affected.find(x=>DISPLAY_PAIRS.includes(x))??selected;
+  const message=upcomingAlert.currency+" "+upcomingAlert.event+" in "+Math.ceil(mins)+" min · "+target+" · direction unconfirmed";
+  setNewsNotices(prev=>{
+   const next=[{key,eventId:upcomingAlert.id,symbol:target,message,at:now,read:false},...prev].slice(0,40);
+   try{localStorage.setItem("apex-news-inapp-history-v1",JSON.stringify(next));}catch{}
+   return next;
+  });
+  if(typeof Notification!=="undefined"&&Notification.permission==="granted"){
+   try{new Notification("APEX Pre-News · "+stage+" warning",{body:message,tag:key});}catch{}
+  }
+  void runNewsScan(upcomingAlert,target,true,stage);
+ // Re-evaluate only as the calendar/time changes; the in-flight ref and persisted IDs prevent duplicate alerts.
+ // eslint-disable-next-line react-hooks/exhaustive-deps
+ },[autoEnabled,calendar,now,selected,marketsQ.data]);
+ const toggleAuto=()=>{
+  setAutoEnabled(current=>{
+   const next=!current;
+   try{localStorage.setItem("apex-news-auto-inapp-v1",next?"on":"off");}catch{}
+   return next;
+  });
+ };
+ const allowBrowser=async()=>{
+  if(typeof Notification==="undefined")return;
+  try{setBrowserAllowed(await Notification.requestPermission()==="granted");}catch{}
+ };
+ const markNoticesRead=()=>{
+  setNewsNotices(prev=>{
+   const next=prev.map(x=>({...x,read:true}));
+   try{localStorage.setItem("apex-news-inapp-history-v1",JSON.stringify(next));}catch{}
+   return next;
+  });
  };
  return <section className="space-y-5" aria-label="Economic pre-news monitor">
   <div className="rounded-xl border border-border bg-card/75 p-5 backdrop-blur">
@@ -103,6 +171,30 @@ export function PreNewsCalendar(){
     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400"/>
     <p>Pre-release direction is <strong>unknown</strong>. An event time is verifiable; a future BUY/SELL direction is not. The displayed effects are conditional scenarios, not forecasts, trade calls or expected win rates. News spikes may reverse rapidly.</p>
    </div>
+   <div className="mt-4 flex flex-wrap items-center gap-2">
+    <button type="button" onClick={toggleAuto}
+      className={"rounded-lg border px-3 py-2 text-xs font-bold "+(autoEnabled?"border-emerald-500/50 bg-emerald-500/10 text-emerald-500":"border-border bg-card text-muted-foreground")}>
+      {autoEnabled?"🔔 AUTO PRE-NEWS ALERTS ON":"🔕 ENABLE AUTO PRE-NEWS ALERTS"}
+    </button>
+    <button type="button" onClick={()=>{void allowBrowser();}} disabled={browserAllowed}
+      className="rounded-lg border border-border px-3 py-2 text-xs font-bold disabled:opacity-50">
+      {browserAllowed?"Browser notifications enabled":"Enable browser notifications"}
+    </button>
+    <span className="text-xs text-muted-foreground">In-app popup while this page is open · Telegram reminders run separately on Cloudflare</span>
+   </div>
+   {newsNotices.length>0&&<div className="mt-4 rounded-xl border border-primary/20 bg-card/70 p-3">
+    <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-bold">🔔 PRE-NEWS ALERT INBOX ({newsNotices.filter(x=>!x.read).length} new)</h3>
+      <button type="button" onClick={markNoticesRead} className="text-xs text-primary underline">Mark read</button></div>
+    <div className="mt-2 max-h-44 space-y-2 overflow-y-auto">
+     {newsNotices.slice(0,8).map(notice=><button type="button" key={notice.key} onClick={()=>{
+       const event=calendar?.events.find(e=>e.id===notice.eventId);
+       if(event){void runNewsScan(event,notice.symbol,true,notice.key.split(":").at(-1)??null);}
+      }} className="block w-full rounded-lg bg-background p-2 text-left text-xs hover:bg-muted">
+       <span className="font-semibold">{notice.read?"":"● "}{notice.message}</span>
+       <span className="ml-2 text-muted-foreground">{eat.format(new Date(notice.at))} EAT</span>
+      </button>)}
+    </div>
+   </div>}
    {calendar?.stale&&<p role="alert" className="mt-3 text-sm text-amber-400">Calendar data is stale. Times may have changed; automatic reminders are paused until the feed updates.</p>}
    {error&&<p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
    <div className="mt-3 text-xs text-muted-foreground">Coverage: {calendar?.coverage??"Calendar coverage not available"} · Source: <a className="underline text-primary" href={calendar?.sourceUrl??"https://xoomar.com/markets/calendar"} target="_blank" rel="noreferrer">{calendar?.source??"Unavailable"}</a> · Last source update: {calendar?.updatedAt?eat.format(new Date(calendar.updatedAt))+" EAT":"not verified"}. Consensus may not be available; check individual releases.</div>
@@ -167,58 +259,12 @@ export function PreNewsCalendar(){
    </div>
   </div>
   <Dialog open={resultsOpen} onOpenChange={setResultsOpen}>
-   <DialogContent className="max-h-[88dvh] w-[calc(100vw-1.5rem)] max-w-2xl overflow-y-auto border-primary/40 bg-background p-5 sm:p-7">
-    <DialogTitle className="font-display text-xl font-bold text-primary">APEX · PRE-NEWS SCAN RESULT</DialogTitle>
-    <DialogDescription>Verified calendar context + last completed Deriv H1 candles. Technical bias is not a prediction of the release.</DialogDescription>
-    <div className="space-y-4 text-sm">
-     <div className="rounded-lg border border-border bg-card/80 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-       <span className="font-semibold">{scanResult?.symbol??selected}</span>
-       <span className="text-xs font-semibold text-amber-400">{scannedEvent?.impact??"HIGH"} IMPACT · {scannedEvent?.currency??"NEWS"}</span>
-      </div>
-      <p className="mt-2 font-medium">{scannedEvent?.event??"No event selected"}</p>
-      {scannedEvent&&<p className="mt-1 text-muted-foreground">Release: {eat.format(new Date(scannedEvent.scheduledAt))} EAT ({utctime.format(new Date(scannedEvent.scheduledAt))} UTC)</p>}
-      <p className="mt-1 text-xs text-muted-foreground">Previous: {scannedEvent?.previous??"Not reported"} · Consensus: {scannedEvent?.forecast??"Not reported"} · Actual: {scannedEvent?.actual??"Pending"}</p>
-     </div>
-     {scanning&&<div role="status" className="rounded-lg border border-primary/30 bg-primary/10 p-4">
-      <RefreshCw className="mr-2 inline h-4 w-4 animate-spin"/>Scanning the latest completed H1 candles…
-     </div>}
-     {!scanning&&scanError&&<div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 p-4">
-       <p className="font-semibold text-destructive">NO VERIFIED SIGNAL — SCAN UNAVAILABLE</p>
-       <p className="mt-2">{scanError}</p>
-       <p className="mt-2 text-xs text-muted-foreground">No direction or entry is provided when data is stale, a market is closed, or the source fails.</p>
-      </div>}
-     {!scanning&&scanResult&&
-      <>
-       <div className="rounded-lg border border-border bg-card/80 p-4">
-        <p className="text-xs uppercase tracking-wide text-muted-foreground">Existing H1 technical bias — not news prediction</p>
-        <p className={"mt-2 text-2xl font-bold "+(scanResult.technicalBias==="BULLISH"?"text-emerald-400":scanResult.technicalBias==="BEARISH"?"text-red-400":"text-amber-400")}>
-         {scanResult.technicalBias==="BULLISH"?"BULLISH TECHNICAL BIAS":scanResult.technicalBias==="BEARISH"?"BEARISH TECHNICAL BIAS":"WAIT / NO TRADE"}
-        </p>
-        <p className="mt-2 text-xs text-muted-foreground">Checked {eat.format(new Date(scanResult.checkedAt))} EAT · Last completed H1 close: {scanResult.dataTime?eat.format(new Date(scanResult.dataTime))+" EAT":"Unavailable"}</p>
-        <div className="mt-4 grid grid-cols-3 gap-2">
-         <div className="rounded-md bg-background p-3"><p className="text-xs text-muted-foreground">EMA 9</p><strong>{scanResult.ema9?.toFixed(5)??"—"}</strong></div>
-         <div className="rounded-md bg-background p-3"><p className="text-xs text-muted-foreground">EMA 21</p><strong>{scanResult.ema21?.toFixed(5)??"—"}</strong></div>
-         <div className="rounded-md bg-background p-3"><p className="text-xs text-muted-foreground">RSI 14</p><strong>{scanResult.rsi?.toFixed(1)??"—"}</strong></div>
-        </div>
-        <p className="mt-3">{scanResult.note}</p>
-       </div>
-       <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
-        <p className="font-semibold text-amber-400">News proximity &amp; execution risk</p>
-        <p className="mt-2">{scanResult.minutesToRelease>0?"Approximately "+scanResult.minutesToRelease+" minutes until release.":"Scheduled release time reached or passed."}</p>
-        <p className="mt-2">H1/M15: pre-release structure · M1/M5: volatile reaction · M15/H1: wait for a post-release close.</p>
-        <p className="mt-2">Spreads and slippage may widen substantially. No entry price, SL or TP is generated by this news scan.</p>
-       </div>
-      </>
-     }
-     {scannedEvent&&<div className="rounded-lg border border-border bg-card/80 p-4">
-      <p className="font-semibold">Possible news impact · {scanResult?.symbol??selected}</p>
-      <p className="mt-2">{scannedEvent.scenarios[scanResult?.symbol??selected]??"Impact may be indirect; actual direction depends on data surprise, yields and market reaction."}</p>
-      <p className="mt-2 text-xs text-muted-foreground">Affected instruments: {scannedEvent.affected.slice(0,12).join(", ")}</p>
-     </div>}
-     <p className="text-xs font-medium text-amber-400">A directional technical reading is not a confirmed BUY or SELL trade signal. There is no reliable way to know exact news-driven direction in advance.</p>
-     <button type="button" onClick={()=>setResultsOpen(false)} className="w-full rounded-lg border border-border bg-card px-4 py-3 font-semibold hover:bg-accent">CLOSE ANALYSIS</button>
-    </div>
+   <DialogContent className="max-h-[92dvh] w-[calc(100vw-1rem)] max-w-xl overflow-y-auto rounded-2xl border-border bg-background p-4 shadow-2xl sm:p-6">
+    <DialogTitle className="font-display text-xl font-black">APEX · PRE-NEWS SIGNAL ANALYSIS</DialogTitle>
+    <DialogDescription>Live pre-release watch and historical H1 technical conditions. Not a confirmed news prediction.</DialogDescription>
+    <NewsSignalCard event={scannedEvent} symbol={scanResult?.symbol??selected} scan={scanResult}
+      busy={scanning} error={scanError} automatic={autoStage!==null} stage={autoStage}/>
+    <button type="button" className="w-full rounded-xl bg-primary px-4 py-3 font-bold text-primary-foreground" onClick={()=>setResultsOpen(false)}>CLOSE ANALYSIS</button>
    </DialogContent>
   </Dialog>
  </section>;
