@@ -310,9 +310,15 @@ function alertFrom(value) {
   if(![id,symbol,strategy,direction,timeframe].every(x=>typeof x==="string"&&x.length>0&&x.length<=160))return null;
   if(!["BUY","SELL"].includes(direction)||!["M1","M5","M15","M30","H1","H4"].includes(timeframe))return null;
   if(![entry,stopLoss,tp1,tp2,rr,candleTime].every(x=>typeof x==="number"&&Number.isFinite(x)))return null;
-  if(rr<2||rr>100||Math.abs(Date.now()-candleTime)>2*60*60*1000)return null;
+  if(rr<2||rr>100||Date.now()<candleTime||Date.now()-candleTime>5*60*1000)return null;
+  const {verifiedAt,currentPrice,quoteTime}=value;
+  if(![verifiedAt,currentPrice,quoteTime].every(x=>typeof x==="number"&&Number.isFinite(x)))return null;
+  if(verifiedAt>Date.now()+10000||Date.now()-verifiedAt>30000||quoteTime>Date.now()+10000||Date.now()-quoteTime>120000)return null;
+  const risk=Math.abs(entry-stopLoss);
+  if(risk<=0||Math.abs(currentPrice-entry)>0.25*risk)return null;
+  if(direction==="BUY"?(currentPrice>=tp1||currentPrice<=stopLoss):(currentPrice<=tp1||currentPrice>=stopLoss))return null;
   if(!(direction==="BUY"?stopLoss<entry&&tp1>entry&&tp2>=tp1:stopLoss>entry&&tp1<entry&&tp2<=tp1))return null;
-  return {id,symbol,strategy,direction,timeframe,entry,stopLoss,tp1,tp2,rr,candleTime};
+  return {id,symbol,strategy,direction,timeframe,entry,stopLoss,tp1,tp2,rr,candleTime,currentPrice,quoteTime,verifiedAt};
 }
 function signalText(a) {
  if(a.type==="WATCH"){
@@ -322,7 +328,7 @@ function signalText(a) {
    "\nRegime: "+a.regime+
    "\n\nNO ENTRY YET. This is directional context, NOT a confirmed trade. Wait for completed-candle strategy confirmation and a fresh price/entry validation; a confirmed alert may never occur.";
  }
-  return `TradePulse ${a.direction} · ${a.symbol}\nTimeframe: ${a.timeframe}\nStrategy: ${a.strategy}\nEntry: ${a.entry}\nSL: ${a.stopLoss}\nTP1: ${a.tp1}\nTP2: ${a.tp2}\nR:R: 1:${a.rr}\nCandle: ${new Date(a.candleTime).toISOString()}\n\nTechnical signal only; not a guaranteed outcome or trade execution.`;
+  return `TradePulse ${a.direction} · ${a.symbol}\nTimeframe: ${a.timeframe}\nStrategy: ${a.strategy}\nEntry: ${a.entry}\nSL: ${a.stopLoss}\nTP1: ${a.tp1}\nTP2: ${a.tp2}\nR:R: 1:${a.rr}\nCandle: ${new Date(a.candleTime).toISOString()}\nVerified market quote: ${a.currentPrice} at ${new Date(a.quoteTime).toISOString()}\n\nEntry was within 0.25R of the live quote when verified; recheck before acting. Technical signal only; not a guaranteed outcome or trade execution.`;
 }
 async function broadcast(env, a) {
   const db=env.TRADEPULSE_DB;
