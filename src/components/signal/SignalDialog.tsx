@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { Link } from "@tanstack/react-router";
 import { signalId } from "@/lib/signal-tracker";
 import { trackerStore } from "@/lib/tracker-store";
+import { pairStrategyReviews, verdictFor, alternativesFor, type PairStrategyReview } from "@/lib/pair-strategy-policy";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -61,6 +62,8 @@ async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: Stra
 }
 
 export function ScanDialog({ open, markets, prices: _prices, onClose, label = "all open markets", section = "all", single = false }: { section?: string; open: boolean; markets: DerivMarket[]; prices: Map<string, number>; onClose: () => void; label?: string; single?: boolean | undefined }) {
+  const trackedSignals = useSyncExternalStore(trackerStore.subscribe, trackerStore.get, trackerStore.getServer);
+  const reviews = pairStrategyReviews(trackedSignals);
   const [progress, setProgress] = useState(0);
   const [current, setCurrent] = useState("");
   const [results, setResults] = useState<Result[]>([]);
@@ -110,6 +113,8 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
         const a = r.analysis;
         if (a.lastCandleTime != null && a.entry != null && a.stopLoss != null && a.takeProfit1 != null && a.takeProfit2 != null) {
           const id = signalId(r.market.derivSymbol, tf, a.lastCandleTime, a.action);
+          const policy=verdictFor(pairStrategyReviews(trackerStore.get()),r.market.symbol,a.strategy);
+          if (policy?.verdict==="AVOID") continue;
           if (!trackerStore.has(id)) void trackerStore.add({ id, derivSymbol: r.market.derivSymbol, symbol: r.market.symbol, decimals: r.market.decimals, action: a.action as "BUY" | "SELL", timeframe: tf, strategy: a.strategy, score: a.score, entry: a.entry, stopLoss: a.stopLoss, takeProfit1: a.takeProfit1, takeProfit2: a.takeProfit2, signalTime: a.lastCandleTime }).catch(console.error);
         }
       }
@@ -119,7 +124,9 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
   }, [open, tf, strategy, indexStrategy, indexEnabled, breakoutThreshold, btcStrategy, btcEnabled]);
 
   const ranked = results.filter((r) => r.analysis).sort((a, b) => b.analysis!.score - a.analysis!.score);
-  const strong = ranked.filter((r) => r.analysis!.action === "BUY" || r.analysis!.action === "SELL");
+  const strongAll = ranked.filter((r) => r.analysis!.action === "BUY" || r.analysis!.action === "SELL");
+  const avoided = strongAll.filter(r=>verdictFor(reviews,r.market.symbol,r.analysis!.strategy)?.verdict==="AVOID");
+  const strong = strongAll.filter(r=>verdictFor(reviews,r.market.symbol,r.analysis!.strategy)?.verdict!=="AVOID");
   const watch = ranked.filter((r) => r.analysis!.action === "WAIT");
   const unavailable = results.filter((r) => r.error);
   const noTrade = results.filter((r) => r.analysis?.action === "NO TRADE");
@@ -216,7 +223,14 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
           )}
 
           {done && single && (
-            one?.analysis ? <SignalCard market={one.market} analysis={one.analysis} detailed /> : <p className="py-8 text-center text-muted-foreground">{one?.error ?? "No data for this market."}</p>
+            one?.analysis ? <div className="space-y-3">
+              {verdictFor(reviews,one.market.symbol,one.analysis.strategy)?.verdict==="AVOID"&&
+               <div role="alert" className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-sm text-rose-400">
+                <strong>HISTORICALLY WEAK PAIR / STRATEGY — NEW SIGNAL AVOIDED</strong>
+                <p className="mt-2">{verdictFor(reviews,one.market.symbol,one.analysis.strategy)?.message}</p>
+               </div>}
+              <SignalCard market={one.market} analysis={one.analysis} detailed blocked={verdictFor(reviews,one.market.symbol,one.analysis.strategy)?.verdict==="AVOID"}/>
+            </div> : <p className="py-8 text-center text-muted-foreground">{one?.error ?? "No data for this market."}</p>
           )}
 
           {done && !single && (
@@ -284,7 +298,7 @@ function timeAgo(t: number) {
   return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
 }
 
-function SignalCard({ market, analysis: a, detailed = false }: { market: DerivMarket; analysis: Analysis; detailed?: boolean }) {
+function SignalCard({ market, analysis: a, detailed = false, blocked = false }: { market: DerivMarket; analysis: Analysis; detailed?: boolean; blocked?: boolean }) {
   const fmt = (v: number | null) => formatMarketPrice(v, market);
   const hasLevels = a.entry !== null;
   const tone = a.score >= 70 ? "text-bull" : a.score >= 50 ? "text-warn" : "text-muted-foreground";
@@ -327,7 +341,7 @@ function SignalCard({ market, analysis: a, detailed = false }: { market: DerivMa
             {a.confirmation && <span>✓ {a.confirmation}</span>}
             {a.invalidation && <span>✕ {a.invalidation}</span>}
           </div>
-          {(a.action === "BUY" || a.action === "SELL") && <TrackButton market={market} analysis={a} />}
+          {(a.action === "BUY" || a.action === "SELL") && !blocked && <TrackButton market={market} analysis={a} />}
         </>
       )}
       {a.reasons.length > 0 && (
@@ -385,7 +399,10 @@ function TrackButton({ market, analysis: a }: { market: DerivMarket; analysis: A
   const action = a.action as "BUY" | "SELL";
   const id = signalId(market.derivSymbol, a.timeframe, a.lastCandleTime, action);
   const tracked = list.some((s) => s.id === id);
+  const reviewed = verdictFor(pairStrategyReviews(list),market.symbol,a.strategy);
+  const avoided = reviewed?.verdict === "AVOID";
   const track = () => {
+    if (avoided) return;
     trackerStore.add({
       id, derivSymbol: market.derivSymbol, symbol: market.symbol, decimals: market.decimals, action, timeframe: a.timeframe,
       strategy: a.strategy, score: a.score, entry: a.entry!, stopLoss: a.stopLoss!, takeProfit1: a.takeProfit1!, takeProfit2: a.takeProfit2!,
@@ -395,8 +412,8 @@ function TrackButton({ market, analysis: a }: { market: DerivMarket; analysis: A
   };
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2">
-      <button onClick={track} disabled={tracked} aria-pressed={tracked} className={`chip chip-sm ${tracked ? "chip-active" : ""}`}>
-        {tracked ? "✓ TRACKING" : "◎ TRACK SIGNAL"}
+      <button onClick={track} disabled={tracked||avoided} aria-pressed={tracked} className={`chip chip-sm ${tracked ? "chip-active" : ""}`}>
+        {tracked ? "✓ TRACKING" : avoided ? "⛔ AVOID — HISTORIC LOSS PATTERN" : "◎ TRACK SIGNAL"}
       </button>
       {tracked && <Link to="/analysis" className="font-mono text-[11px] text-primary hover:underline">See result in Analysis →</Link>}
     </div>
