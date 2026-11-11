@@ -10,7 +10,6 @@ CREATE TABLE IF NOT EXISTS index_pullback_plans (
  status TEXT NOT NULL DEFAULT 'PENDING'
  CHECK(status IN ('PENDING','CONFIRMED','INVALIDATED','EXPIRED')),
  reason TEXT,
- checked_at INTEGER,
- FOREIGN KEY(id) REFERENCES index_alerts(id)
+ checked_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_index_pullback_pending ON index_pullback_plans(status,created_at);
