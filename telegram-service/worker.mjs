@@ -302,7 +302,11 @@ function watchFrom(value){
  if(![id,symbol,strategy,timeframe,bias,regime].every(x=>typeof x==="string"&&x.length>0&&x.length<=160))return null;
  if(timeframe!=="M15"||!["BULLISH","BEARISH"].includes(bias)||regime!=="TRENDING")return null;
  if(!Number.isFinite(candleTime)||!Number.isFinite(createdAt)||Math.abs(Date.now()-createdAt)>5*60*1000||Date.now()-candleTime>6*60*1000)return null;
- return {type:"WATCH",id,symbol,strategy,timeframe,candleTime,bias,regime,createdAt};
+ const {entryZoneLow,entryZoneHigh,expiresAt}=value;
+ const hasZone=[entryZoneLow,entryZoneHigh,expiresAt].every(Number.isFinite)&&
+  entryZoneLow>0&&entryZoneLow<entryZoneHigh&&expiresAt>createdAt&&expiresAt>Date.now();
+ return {type:"WATCH",id,symbol,strategy,timeframe,candleTime,bias,regime,createdAt,
+  ...(hasZone?{entryZoneLow,entryZoneHigh,expiresAt}:{})};
 }
 function alertFrom(value) {
   if(!value || typeof value!=="object" || Array.isArray(value))return null;
@@ -326,7 +330,11 @@ function signalText(a) {
    "\nM15 candle: "+new Date(a.candleTime).toISOString()+
    "\nH1 trend context: "+a.bias+
    "\nRegime: "+a.regime+
-   "\n\nNO ENTRY YET. This is directional context, NOT a confirmed trade. Wait for completed-candle strategy confirmation and a fresh price/entry validation; a confirmed alert may never occur.";
+   (a.entryZoneLow!==undefined?
+     "\n\nPULLBACK WATCH ZONE: "+a.entryZoneLow+" – "+a.entryZoneHigh+
+     "\nSetup expires: "+new Date(a.expiresAt).toISOString()+
+     "\nWait for a later completed M1 pullback rejection and fresh price inside this zone.":"")+
+   "\n\nNO ENTRY YET. If TP or SL was reached before retest the setup is invalid; a confirmed trade alert may never occur.";
  }
   return `TradePulse ${a.direction} · ${a.symbol}\nTimeframe: ${a.timeframe}\nStrategy: ${a.strategy}\nEntry: ${a.entry}\nSL: ${a.stopLoss}\nTP1: ${a.tp1}\nTP2: ${a.tp2}\nR:R: 1:${a.rr}\nCandle: ${new Date(a.candleTime).toISOString()}\nVerified market quote: ${a.currentPrice} at ${new Date(a.quoteTime).toISOString()}\n\nEntry was within 0.25R of the live quote when verified; recheck before acting. Technical signal only; not a guaranteed outcome or trade execution.`;
 }
