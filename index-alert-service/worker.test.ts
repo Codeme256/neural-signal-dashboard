@@ -29,6 +29,31 @@ describe("independent index alert worker read API", () => {
     } as never);
     expect(res.status).toBe(403);
   });
+  it("returns public hypothetical outcomes, never private account credentials",async()=>{
+    const origin="https://apex-signal-tank.davidmwesigwa71.workers.dev";
+    const db={
+      prepare(_sql:string){return{
+        all:async()=>({results:[{alert_id:"id1",symbol:"US500",strategy:"Trend Continuation",
+          direction:"BUY",timeframe:"M15",signal_time:1790000000000,status:"LOST",
+          target:null,closed_at:1790000900000,checked_at:1790000900000,entry:100,
+          stop_loss:99,tp1:102,tp2:103}]})
+      };}
+    };
+    const res=await worker.fetch(new Request("https://alerts.example/outcomes",{headers:{Origin:origin}}),{
+      TRADEPULSE_DB:db,CORS_ORIGIN:origin,TRADEPULSE_PUBLISH_SECRET:"secret-that-must-not-leak"
+    } as never);
+    expect(res.status).toBe(200);
+    const data=await res.text();
+    expect(data).toContain('"status":"LOST"');
+    expect(data).toContain('"kind":"hypothetical_signal_outcomes"');
+    expect(data).not.toContain("secret-that-must-not-leak");
+  });
+  it("returns a clear outage when the follow-up D1 migration has not been applied",async()=>{
+    const db={prepare(_sql:string){return{all:async()=>{throw Error("no such table: index_alert_outcomes");}};}};
+    const res=await worker.fetch(new Request("https://alerts.example/outcomes"),{TRADEPULSE_DB:db} as never);
+    expect(res.status).toBe(503);
+    expect(await res.text()).toContain("migration");
+  });
   it("returns market-only data with allowed origin",async () => {
     const origin="https://apex-signal-tank.davidmwesigwa71.workers.dev";
     const res=await worker.fetch(new Request("https://alerts.example/alerts",{headers:{Origin:origin}}),{
