@@ -3,6 +3,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { getScanHistory, type ScanRecord } from "@/lib/index-scan-history";
 import { INDEX_STRATEGIES } from "@/lib/index-signal-engine";
 import { outcomeMetrics } from "@/lib/index-performance";
+import { buildFollowUpReport, type FollowUpGroup } from "@/lib/signal-follow-up";
 import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { UserMenu } from "@/components/auth/UserMenu";
 import { fetchCandlesRange } from "@/lib/candle-store";
@@ -57,6 +58,7 @@ function AnalysisPage() {
   const list = useSyncExternalStore(trackerStore.subscribe, trackerStore.get, trackerStore.getServer);
   useOutcomeChecker(list);
   const sum = summarize(list);
+  const followUp = buildFollowUpReport(list);
   const hasFinished = list.some(isFinal);
   const [scanHistory, setScanHistory] = useState<ScanRecord[]>([]);
   const [indexFilter, setIndexFilter] = useState("ALL");
@@ -169,6 +171,47 @@ function AnalysisPage() {
           })}
           <p className="mt-3 font-mono text-[11px] text-muted-foreground">Market regime uses scan-time ADX when recorded; otherwise UNKNOWN. Costs and time-separated out-of-sample backtests remain pending.</p>
         </section>
+        <section className="mt-6 space-y-4 rounded-xl border border-primary/30 bg-card/70 p-4 sm:p-5" aria-label="Signal win loss learning review">
+          <div>
+            <h2 className="font-display text-lg font-bold">SIGNAL FOLLOW-UP · WIN / LOSS LEARNING</h2>
+            <p className="mt-1 text-xs text-muted-foreground">Historical evidence review for all account-tracked signals. Observes which setups tend to fail, without automatically changing production signal rules or treating hypothetical candle results as real trade profits.</p>
+          </div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <Stat label="Resolved" value={followUp.resolved}/>
+            <Stat label="Open / in progress" value={followUp.stillOpen}/>
+            <Stat label="Expired (no result)" value={followUp.expired}/>
+            <Stat label="Evidence threshold" value={followUp.sampleReady?"30+ outcomes":"Not reached"}/>
+          </div>
+          {!followUp.sampleReady && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+            Do not auto-adjust strategies yet. At least 30 resolved outcomes are required for a first descriptive review per segment, and even 30 is not enough to prove a trading edge.
+          </p>}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <FollowUpSummary group={followUp.prior}/>
+            <FollowUpSummary group={followUp.recent}/>
+          </div>
+          <p className="text-xs text-muted-foreground">Earlier and later halves are separated by signal timestamp. This is a descriptive comparison, not independent out-of-sample validation.</p>
+          <div className="grid gap-3 lg:grid-cols-2">
+            <FollowUpTable title="STRATEGY PERFORMANCE" groups={followUp.byStrategy}/>
+            <FollowUpTable title="TIMEFRAME PERFORMANCE" groups={followUp.byTimeframe}/>
+            <FollowUpTable title="INSTRUMENT PERFORMANCE" groups={followUp.bySymbol}/>
+            <FollowUpTable title="SIGNAL SCORE BANDS" groups={followUp.byScoreBand}/>
+          </div>
+          <div className="rounded-lg border border-border bg-background/50 p-3">
+            <h3 className="font-semibold">Where losses cluster</h3>
+            <p className="mt-1 text-xs text-muted-foreground">Largest historical loss counts, not proof that a setup will lose next time. Focus on clusters with adequate sample sizes.</p>
+            {followUp.topLossClusters.length===0?<p className="mt-2 text-xs text-muted-foreground">No resolved losses recorded yet.</p>:
+              <div className="mt-3 space-y-2">{followUp.topLossClusters.map(g=><div key={g.label} className="flex flex-wrap justify-between gap-2 border-b border-border/50 pb-2 text-xs">
+                <span>{g.label}</span><span className="font-mono text-rose-500">{g.losses} lost / {g.resolved} resolved · {g.review==="INSUFFICIENT"?"Small sample":g.averageR===null?"No R data":g.averageR.toFixed(2)+" avg R"}</span>
+              </div>)}</div>}
+          </div>
+          <div className="rounded-lg border border-border p-3">
+            <h3 className="font-semibold">Follow-up recommendations</h3>
+            <ul className="mt-2 list-inside list-disc space-y-2 text-xs text-muted-foreground">
+              {followUp.lessons.map(x=><li key={x}>{x}</li>)}
+            </ul>
+            <p className="mt-3 text-xs font-medium text-amber-600 dark:text-amber-300">Advisory only: changes to production signal selection require separate historical replay, transaction-cost modeling, forward testing and an explicit reviewed deployment.</p>
+          </div>
+        </section>
         {list.length === 0 ? (
           <div className="mt-12 rounded-xl border border-border bg-card/60 p-8 text-center backdrop-blur">
             <p className="font-display text-lg font-bold">No tracked signals yet</p>
@@ -244,4 +287,26 @@ function Level({ label, value, tone }: { label: string; value: string; tone: str
       <div className={`text-sm font-semibold ${tone}`}>{value}</div>
     </div>
   );
+}
+
+function FollowUpSummary({group}:{group:FollowUpGroup}) {
+ return <div className="rounded-lg border border-border bg-background/50 p-3">
+   <p className="font-mono text-[11px] uppercase text-muted-foreground">{group.label}</p>
+   <p className="mt-2 font-display text-xl font-bold">{group.averageR===null?"—":group.averageR.toFixed(2)+" R"} <span className="text-xs font-normal text-muted-foreground">gross mean</span></p>
+   <p className="mt-1 text-xs">{group.resolved} resolved · {group.wins} wins · {group.losses} losses · Win {group.winRate===null?"—":group.winRate.toFixed(1)+"%"}</p>
+   <p className="mt-2 text-xs text-muted-foreground">{group.reason}</p>
+ </div>;
+}
+function FollowUpTable({title,groups}:{title:string;groups:FollowUpGroup[]}) {
+ return <details className="rounded-lg border border-border bg-background/40 p-3">
+   <summary className="cursor-pointer font-display text-sm font-semibold">{title} ({groups.length})</summary>
+   {!groups.length?<p className="mt-3 text-xs text-muted-foreground">No resolved signal history.</p>:
+    <div className="mt-3 max-h-64 space-y-2 overflow-y-auto">
+      {groups.map(g=><div key={g.label} className="rounded-lg border border-border/50 p-2 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2"><strong>{g.label}</strong><span className={g.review==="REVIEW LOSSES"?"text-rose-500":"text-muted-foreground"}>{g.review==="INSUFFICIENT"?"SMALL SAMPLE":g.review==="REVIEW LOSSES"?"REVIEW LOSSES":"MONITOR"}</span></div>
+        <p className="mt-1 font-mono">{g.resolved} resolved · W {g.wins} / L {g.losses} · Win {g.winRate===null?"—":g.winRate.toFixed(1)+"%"} · Mean {g.averageR===null?"—":g.averageR.toFixed(2)+"R"}</p>
+        <p className="mt-1 text-muted-foreground">{g.reason}</p>
+      </div>)}
+    </div>}
+ </details>;
 }
