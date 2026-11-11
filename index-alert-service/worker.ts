@@ -8,6 +8,7 @@ import { analyzeIndex } from "../src/lib/index-signal-engine";
 import { TF_SECONDS, HIGHER_TF, type Timeframe } from "../src/lib/strategies/types";
 import { evaluateOutcome } from "../src/lib/signal-tracker";
 import { validateFreshEntry } from "./entry-freshness";
+import { assessPullback, pullbackZone, type PullbackPlan } from "./pullback-policy";
 
 type ScheduledController = { scheduledTime: number };
 type ExecutionContext = { waitUntil(promise: Promise<unknown>): void };
@@ -88,7 +89,8 @@ function makeRequester(ws: WebSocket) {
 }
 
 type Watch={type:"WATCH";id:string;symbol:string;strategy:string;timeframe:Timeframe;
- candleTime:number;bias:"BULLISH"|"BEARISH";regime:string;createdAt:number};
+ candleTime:number;bias:"BULLISH"|"BEARISH";regime:string;createdAt:number;
+ entryZoneLow?:number;entryZoneHigh?:number;expiresAt?:number};
 async function publishTelegram(env: Env, a: Alert|Watch): Promise<boolean> {
   if (!env.TELEGRAM_PUBLISH_URL || !env.TRADEPULSE_PUBLISH_SECRET) return false;
   const parsed = new URL(env.TELEGRAM_PUBLISH_URL);
@@ -209,6 +211,57 @@ async function retryPending(env: Env) {
   }finally{try{ws.close(1000,"Pending entries checked");}catch{}}
 }
 
+/** The only path from PENDING plan to confirmed BUY/SELL notification. */
+async function monitorPullbacks(env:Env) {
+ const pending=await env.TRADEPULSE_DB.prepare(
+  "SELECT * FROM index_pullback_plans WHERE status='PENDING' ORDER BY created_at ASC LIMIT 8"
+ ).all<PullbackPlan>();
+ if(!(pending.results??[]).length)return;
+ const ws=await connect(),request=makeRequester(ws);
+ try{
+  for(const p of pending.results??[]){
+   try{
+    const now=Date.now();
+    if(now>=p.expires_at){
+     await env.TRADEPULSE_DB.prepare("UPDATE index_pullback_plans SET status='EXPIRED',reason='Setup expired before pullback',checked_at=? WHERE id=? AND status='PENDING'").bind(now,p.id).run();
+     continue;
+    }
+    const raw=await request({ticks_history:p.deriv_symbol,start:Math.floor(p.candle_time/1000),end:"latest",
+      count:180,style:"candles",granularity:60});
+    const candles=parseDerivOhlc(raw.candles).filter(c=>c.time>=p.candle_time&&c.time+60000<=now);
+    const q=await request({ticks_history:p.deriv_symbol,count:1,end:"latest",style:"ticks"});
+    const price=Number((q.history as {prices?:unknown[]}|undefined)?.prices?.at(-1));
+    const time=Number((q.history as {times?:unknown[]}|undefined)?.times?.at(-1))*1000;
+    const decision=assessPullback(p,candles,Date.now(),price,time);
+    if(decision.state==="WAIT")continue;
+    if(decision.state==="INVALIDATED"||decision.state==="EXPIRED"){
+     await env.TRADEPULSE_DB.prepare("UPDATE index_pullback_plans SET status=?,reason=?,checked_at=? WHERE id=? AND status='PENDING'")
+      .bind(decision.state,decision.reason,Date.now(),p.id).run();
+     continue;
+    }
+    const verifiedAt=Date.now();
+    // A retest is recent even when the original M15 setup is older than five minutes;
+    // do NOT bypass publisher's freshness policy: send the M1 confirmation time as candleTime.
+    const confirmationTime=candles[candles.length-1]!.time+60000;
+    const confirmationCheck=validateFreshEntry({now:verifiedAt,candleTime:confirmationTime,expiresAt:p.expires_at,
+      quoteTime:time,currentPrice:price,entry:p.entry,stopLoss:p.stop_loss,tp1:p.tp1,tp2:p.tp2,direction:p.direction});
+    if(!confirmationCheck.ok){console.log("Pullback confirmed but no timely quote",p.symbol,confirmationCheck.reason);continue;}
+    const alert:Alert={id:p.id,symbol:p.symbol,deriv_symbol:p.deriv_symbol,strategy:p.strategy+" · Confirmed pullback",
+      direction:p.direction,timeframe:"M15",candle_time:confirmationTime,created_at:verifiedAt,
+      expires_at:p.expires_at,entry:p.entry,stop_loss:p.stop_loss,tp1:p.tp1,tp2:p.tp2,
+      rr:p.rr,quality_score:p.quality_score,data_source:"Deriv M15+M1 retest",
+      verified_at:verifiedAt,verified_quote:price,verified_quote_time:time};
+    await record(env,alert);
+    const delivered=await publishTelegram(env,alert);
+    await env.TRADEPULSE_DB.prepare("UPDATE index_alerts SET notification_status=? WHERE id=?")
+      .bind(delivered?"SENT":"PENDING",p.id).run();
+    await env.TRADEPULSE_DB.prepare("UPDATE index_pullback_plans SET status='CONFIRMED',reason=?,checked_at=? WHERE id=? AND status='PENDING'")
+      .bind(decision.reason,Date.now(),p.id).run();
+  }catch(error){console.warn("Pullback monitor skipped",p.symbol,error instanceof Error?error.message:"Unknown");}
+  }
+ }finally{try{ws.close(1000,"Pullback scan complete");}catch{}}
+}
+
 async function scheduledScan(env: Env) {
   if (!env.TRADEPULSE_DB) throw Error("Required index alert database binding is missing");
   const ws = await connect();
@@ -268,34 +321,23 @@ async function scheduledScan(env: Env) {
           rr:result.riskReward,quality_score:result.score,
           data_source:"Deriv",
         };
-        // Verify the price against a fresh tick BEFORE storing or publishing a new entry.
-        // If the candle signal is late or price has moved >0.25R, do not announce it.
-        let fresh=false;
-        try{
-          const quote=await request({ticks_history:m.derivSymbol,count:1,end:"latest",style:"ticks"});
-          const px=Number((quote.history as {prices?:unknown[]}|undefined)?.prices?.at(-1));
-          const qt=Number((quote.history as {times?:unknown[]}|undefined)?.times?.at(-1))*1000;
-          const verdict=validateFreshEntry({
-           now:Date.now(),candleTime:a.candle_time,expiresAt:a.expires_at,
-           quoteTime:qt,currentPrice:px,entry:a.entry,stopLoss:a.stop_loss,tp1:a.tp1,tp2:a.tp2,
-           direction:a.direction,
-          });
-          fresh=verdict.ok;
-          if(fresh){a.verified_at=Date.now();a.verified_quote=px;a.verified_quote_time=qt;}
-          if(!fresh)console.log("Signal not published: entry no longer timely",m.symbol,verdict.reason);
-        }catch(error){console.warn("Fresh quote unavailable; no entry alert",m.symbol,error instanceof Error?error.message:"Unknown");}
-        if(!fresh){staleSuppressed++;continue;}
-        if (!await record(env,a)) continue; // idempotent across scheduled invocations
-        stored++;
-        try {
-          const delivered=await publishTelegram(env,a);
-          await env.TRADEPULSE_DB.prepare("UPDATE index_alerts SET notification_status=? WHERE id=?")
-            .bind(delivered?"SENT":"PENDING",a.id).run();
-          if (!delivered) deliveryFailures++;
-        } catch {
-          deliveryFailures++;
-          // Persist signal even when Telegram is unavailable, never expose private secrets.
-        }
+        // A newly confirmed setup is a PENDING pullback plan, never an instant entry.
+        // Store separately so unfilled plans cannot enter win/loss statistics.
+        if(a.expires_at===null||a.expires_at<=now)continue;
+        const zone=pullbackZone({entry:a.entry,stop_loss:a.stop_loss});
+        const insert=await env.TRADEPULSE_DB.prepare(
+         "INSERT OR IGNORE INTO index_pullback_plans (id,symbol,deriv_symbol,strategy,direction,candle_time,created_at,expires_at,entry,stop_loss,tp1,tp2,rr,quality_score) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        ).bind(a.id,a.symbol,a.deriv_symbol,a.strategy,a.direction,a.candle_time,a.created_at,a.expires_at,
+          a.entry,a.stop_loss,a.tp1,a.tp2,a.rr,a.quality_score).run();
+        if((insert.meta?.changes??0)!==1)continue;
+        const watch:Watch={type:"WATCH",id:a.id+":PULLBACK",symbol:a.symbol,strategy:a.strategy,
+          timeframe:TF,candleTime:a.candle_time,bias:a.direction==="BUY"?"BULLISH":"BEARISH",
+          regime:"TRENDING",createdAt:now,entryZoneLow:Number(zone.low.toFixed(m.decimals)),
+          entryZoneHigh:Number(zone.high.toFixed(m.decimals)),expiresAt:a.expires_at};
+        try{if(await publishTelegram(env,watch))watchSent++;}
+        catch{deliveryFailures++;}
+        // Only monitorPullbacks() can issue confirmed entries after a fresh M1 retest.
+
       } catch (error) {
         console.warn("Index scan skipped:",m.symbol,error instanceof Error?error.message:"Unknown error");
       }
@@ -303,6 +345,7 @@ async function scheduledScan(env: Env) {
   } finally {
     try { ws.close(1000,"Scan complete"); } catch { /* disconnected */ }
   }
+  try { await monitorPullbacks(env); } catch (error) { console.warn("Pullback monitor unavailable",error instanceof Error?error.message:"Unknown"); }
   try { await retryPending(env); } catch { /* D1 unavailable; retry next run. */ }
   console.log("Index scheduled scan",{scanned,stored,watchSent,staleSuppressed,deliveryFailures});
 }
