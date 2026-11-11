@@ -4,6 +4,7 @@ import { getScanHistory, type ScanRecord } from "@/lib/index-scan-history";
 import { INDEX_STRATEGIES } from "@/lib/index-signal-engine";
 import { outcomeMetrics } from "@/lib/index-performance";
 import { buildFollowUpReport, type FollowUpGroup } from "@/lib/signal-follow-up";
+import { pairStrategyReviews } from "@/lib/pair-strategy-policy";
 import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { UserMenu } from "@/components/auth/UserMenu";
 import { fetchCandlesRange } from "@/lib/candle-store";
@@ -59,6 +60,9 @@ function AnalysisPage() {
   useOutcomeChecker(list);
   const sum = summarize(list);
   const followUp = buildFollowUpReport(list);
+  const pairReviews = pairStrategyReviews(list);
+  const pairAvoided = pairReviews.filter(p=>p.verdict==="AVOID");
+  const pairCandidates = pairReviews.filter(p=>p.verdict==="CANDIDATE");
   const hasFinished = list.some(isFinal);
   const [scanHistory, setScanHistory] = useState<ScanRecord[]>([]);
   const [indexFilter, setIndexFilter] = useState("ALL");
@@ -185,6 +189,27 @@ function AnalysisPage() {
           {!followUp.sampleReady && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
             Do not auto-adjust strategies yet. At least 30 resolved outcomes are required for a first descriptive review per segment, and even 30 is not enough to prove a trading edge.
           </p>}
+          <section className="rounded-xl border border-border bg-background/50 p-3" aria-label="Adaptive pair strategy protection">
+            <h3 className="font-display text-base font-bold">PAIR × STRATEGY PROTECTION</h3>
+            <p className="mt-2 text-xs text-muted-foreground">A pair is not disabled after one loss. The scanner avoids an exact pair/strategy combination only if 40+ resolved candle-tracked outcomes exist and both chronological halves show negative gross average R. No automated live trading or strategy rewriting.</p>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+              <Stat label="Avoided combinations" value={pairAvoided.length}/>
+              <Stat label="Research alternatives" value={pairCandidates.length}/>
+              <Stat label="Insufficient evidence" value={pairReviews.filter(p=>p.verdict==="COLLECT DATA").length}/>
+            </div>
+            <div className="mt-3 max-h-80 space-y-2 overflow-y-auto">
+              {pairReviews.length===0?<p className="text-xs text-muted-foreground">No pair/strategy outcome history yet.</p>:
+               pairReviews.map(p=><div key={p.symbol+":"+p.strategy} className="rounded-lg border border-border/60 p-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <strong>{p.symbol} · {p.strategy}</strong>
+                  <span className={p.verdict==="AVOID"?"font-bold text-rose-500":p.verdict==="CANDIDATE"?"font-bold text-emerald-500":"text-amber-500"}>{p.verdict==="AVOID"?"AVOID NEW SIGNALS":p.verdict==="CANDIDATE"?"RESEARCH CANDIDATE":"COLLECT MORE DATA"}</span>
+                </div>
+                <p className="mt-1 font-mono">{p.total} resolved · {p.wins} W / {p.losses} L · Earlier {p.olderR===null?"—":p.olderR.toFixed(2)+"R"} · Later {p.newerR===null?"—":p.newerR.toFixed(2)+"R"}</p>
+                <p className="mt-1 text-muted-foreground">{p.message}</p>
+              </div>)}
+            </div>
+            <p className="mt-3 text-xs text-amber-600 dark:text-amber-300">Caution: these are hypothetical candle outcomes, not executed trade results; commissions, spreads and slippage are excluded. Positive groups are not automatically selected. Confirm on held-out data before using any new filter as a performance claim.</p>
+          </section>
           <div className="grid gap-3 sm:grid-cols-2">
             <FollowUpSummary group={followUp.prior}/>
             <FollowUpSummary group={followUp.recent}/>
