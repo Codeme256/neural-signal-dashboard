@@ -27,6 +27,7 @@ interface Env {
   CORS_ORIGIN?: string;
 }
 type Alert = {
+  verified_at?: number; verified_quote?: number; verified_quote_time?: number;
   id: string; symbol: string; deriv_symbol: string; strategy: string;
   direction: "BUY" | "SELL"; timeframe: Timeframe;
   candle_time: number; created_at: number; expires_at: number | null;
@@ -103,6 +104,7 @@ async function publishTelegram(env: Env, a: Alert|Watch): Promise<boolean> {
       direction: a.direction, timeframe: a.timeframe, entry: a.entry,
       stopLoss: a.stop_loss, tp1: a.tp1, tp2: a.tp2,
       rr: a.rr, candleTime: a.candle_time,
+      verifiedAt: a.verified_at, currentPrice: a.verified_quote, quoteTime: a.verified_quote_time,
     }),
   });
   if (!result.ok) return false;
@@ -176,18 +178,35 @@ async function followUpIssuedAlerts(env:Env) {
 /** Retry alerts after temporary Telegram failure; publisher deduplicates per subscriber. */
 async function retryPending(env: Env) {
   if (!env.TELEGRAM_PUBLISH_URL || !env.TRADEPULSE_PUBLISH_SECRET) return;
-  const recent = Date.now() - 90 * 60 * 1000;
-  const pending = await env.TRADEPULSE_DB.prepare(
-    "SELECT * FROM index_alerts WHERE notification_status='PENDING' AND candle_time>? ORDER BY created_at ASC LIMIT 10"
-  ).bind(recent).all<Alert>();
-  for(const a of pending.results??[]) {
-    try {
-      if (await publishTelegram(env,a)) {
-        await env.TRADEPULSE_DB.prepare("UPDATE index_alerts SET notification_status='SENT' WHERE id=?")
-          .bind(a.id).run();
+  const pending=await env.TRADEPULSE_DB.prepare(
+    "SELECT * FROM index_alerts WHERE notification_status='PENDING' ORDER BY created_at DESC LIMIT 10"
+  ).all<Alert>();
+  if(!(pending.results??[]).length)return;
+  const ws=await connect(),request=makeRequester(ws);
+  try{
+    for(const a of pending.results??[]){
+      const now=Date.now();
+      if(now-a.candle_time>5*60*1000 || (a.expires_at!==null&&now>=a.expires_at)){
+        await env.TRADEPULSE_DB.prepare("UPDATE index_alerts SET notification_status='EXPIRED' WHERE id=?").bind(a.id).run();
+        continue;
       }
-    } catch { /* Retain as pending for the next scheduled invocation. */ }
-  }
+      try {
+        const raw=await request({ticks_history:a.deriv_symbol,count:1,end:"latest",style:"ticks"});
+        const px=Number((raw.history as {prices?:unknown[]}|undefined)?.prices?.at(-1));
+        const qt=Number((raw.history as {times?:unknown[]}|undefined)?.times?.at(-1))*1000;
+        const check=validateFreshEntry({now:Date.now(),candleTime:a.candle_time,expiresAt:a.expires_at,
+          quoteTime:qt,currentPrice:px,entry:a.entry,stopLoss:a.stop_loss,tp1:a.tp1,tp2:a.tp2,direction:a.direction});
+        if(!check.ok){
+          await env.TRADEPULSE_DB.prepare("UPDATE index_alerts SET notification_status='EXPIRED' WHERE id=?").bind(a.id).run();
+          continue;
+        }
+        a.verified_at=Date.now();a.verified_quote=px;a.verified_quote_time=qt;
+        if(await publishTelegram(env,a)){
+          await env.TRADEPULSE_DB.prepare("UPDATE index_alerts SET notification_status='SENT' WHERE id=?").bind(a.id).run();
+        }
+      }catch{ /* Retain only until five-minute freshness deadline. */}
+    }
+  }finally{try{ws.close(1000,"Pending entries checked");}catch{}}
 }
 
 async function scheduledScan(env: Env) {
@@ -262,6 +281,7 @@ async function scheduledScan(env: Env) {
            direction:a.direction,
           });
           fresh=verdict.ok;
+          if(fresh){a.verified_at=Date.now();a.verified_quote=px;a.verified_quote_time=qt;}
           if(!fresh)console.log("Signal not published: entry no longer timely",m.symbol,verdict.reason);
         }catch(error){console.warn("Fresh quote unavailable; no entry alert",m.symbol,error instanceof Error?error.message:"Unknown");}
         if(!fresh){staleSuppressed++;continue;}
