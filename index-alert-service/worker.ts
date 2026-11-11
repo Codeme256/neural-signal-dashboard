@@ -6,6 +6,7 @@
 import { parseDerivMarkets, parseDerivOhlc } from "../src/lib/deriv-data";
 import { analyzeIndex } from "../src/lib/index-signal-engine";
 import { TF_SECONDS, HIGHER_TF, type Timeframe } from "../src/lib/strategies/types";
+import { evaluateOutcome } from "../src/lib/signal-tracker";
 
 type ScheduledController = { scheduledTime: number };
 type ExecutionContext = { waitUntil(promise: Promise<unknown>): void };
@@ -114,6 +115,60 @@ async function record(env: Env, a: Alert): Promise<boolean> {
   return (result.meta?.changes ?? 0) > 0;
 }
 
+type FollowUpAlert=Alert & {status?:string;closed_at?:number|null};
+const OUTCOME_LIMIT=12;
+/**
+ * Checks server-generated index alerts after the website is closed.
+ * Uses only completed M15 candles, never extrapolates missing OHLC data.
+ * Persisted outcomes are hypothetical candle touches, not actual broker fills.
+ */
+async function followUpIssuedAlerts(env:Env) {
+ const pending=await env.TRADEPULSE_DB.prepare(
+  "SELECT a.* FROM index_alerts a LEFT JOIN index_alert_outcomes o ON o.alert_id=a.id WHERE o.alert_id IS NULL OR o.closed_at IS NULL ORDER BY COALESCE(o.checked_at,0) ASC, a.candle_time DESC LIMIT ?"
+ ).bind(OUTCOME_LIMIT).all<FollowUpAlert>();
+ if(!(pending.results??[]).length)return;
+ const ws=await connect(),request=makeRequester(ws);
+ let updated=0;
+ try{
+  for(const a of pending.results??[]){
+   try{
+    if(a.timeframe!=="M15")continue;
+    const now=Date.now(),step=TF_SECONDS.M15*1000;
+    const until=Math.min(now,a.candle_time+48*step);
+    const raw=await request({
+     ticks_history:a.deriv_symbol,
+     start:Math.floor(a.candle_time/1000),
+     end:until>=now?"latest":Math.floor(until/1000),
+     style:"candles",granularity:TF_SECONDS.M15,count:100,
+    });
+    const candles=parseDerivOhlc(raw.candles)
+      .filter(c=>c.time>=a.candle_time&&c.time+step<=now);
+    if(!candles.length||candles[0]!.time>a.candle_time)continue;
+    // Missing middle candles hide unknown stop/target ordering: never issue a verified outcome.
+    if(candles.some((c,i)=>i>0&&c.time-candles[i-1]!.time!==step))continue;
+    // Do not mark EXPIRED without confirmed OHLC coverage through the 48-candle horizon.
+    const expiry=a.candle_time+48*step;
+    const lastClosed=candles[candles.length-1]!.time+step;
+    const throughEnd=now>=expiry&&lastClosed>=expiry;
+    const outcome=evaluateOutcome({
+     action:a.direction,timeframe:"M15",stopLoss:a.stop_loss,
+     takeProfit1:a.tp1,takeProfit2:a.tp2,signalTime:a.candle_time
+    },candles,throughEnd?now:Math.min(now,expiry-1));
+    // OPEN and TP1 provisional WIN remain pending for the next scheduled check.
+    await env.TRADEPULSE_DB.prepare(
+     "INSERT INTO index_alert_outcomes (alert_id,symbol,strategy,direction,timeframe,signal_time,status,target,closed_at,checked_at) VALUES (?,?,?,?,?,?,?,?,?,?) "+
+     "ON CONFLICT(alert_id) DO UPDATE SET status=excluded.status,target=excluded.target,closed_at=excluded.closed_at,checked_at=excluded.checked_at"
+    ).bind(a.id,a.symbol,a.strategy,a.direction,a.timeframe,a.candle_time,
+     outcome.status,outcome.target,outcome.closedAt,now).run();
+    updated++;
+   }catch(error){
+    console.warn("Outcome follow-up skipped",a.symbol,error instanceof Error?error.message:"Unknown");
+   }
+  }
+ }finally{try{ws.close(1000,"Outcome follow-up complete");}catch{}}
+ console.log("Index alert server follow-up",{updated});
+}
+
 /** Retry alerts after temporary Telegram failure; publisher deduplicates per subscriber. */
 async function retryPending(env: Env) {
   if (!env.TELEGRAM_PUBLISH_URL || !env.TRADEPULSE_PUBLISH_SECRET) return;
@@ -196,6 +251,7 @@ async function scheduledScan(env: Env) {
 export default {
   async scheduled(_event: ScheduledController,env: Env,ctx: ExecutionContext) {
     ctx.waitUntil(scheduledScan(env));
+    ctx.waitUntil(followUpIssuedAlerts(env).catch(e=>console.warn("Scheduled index follow-up unavailable",e instanceof Error?e.message:"Unknown")));
   },
   async fetch(request: Request,env: Env) {
     const url=new URL(request.url);
@@ -205,12 +261,21 @@ export default {
       telegramPublisherConfigured:!!(env.TELEGRAM_PUBLISH_URL&&env.TRADEPULSE_PUBLISH_SECRET),
       dbConfigured:!!env.TRADEPULSE_DB,
     });
-    if (request.method!=="GET"||url.pathname!=="/alerts") return response({error:"Not found"},404);
+    if (request.method!=="GET"||(url.pathname!=="/alerts"&&url.pathname!=="/outcomes")) return response({error:"Not found"},404);
     const origin=request.headers.get("Origin");
     const allowed = env.CORS_ORIGIN?.replace(/\/$/,"");
     const cors = origin && allowed && origin===allowed ? origin : undefined;
     if (origin && !cors) return response({error:"Origin not allowed"},403);
     if (!env.TRADEPULSE_DB) return response({error:"Market alert storage unavailable"},503,cors);
+    if(url.pathname==="/outcomes"){
+      try{
+       const rows=await env.TRADEPULSE_DB.prepare(
+        "SELECT o.alert_id,o.symbol,o.strategy,o.direction,o.timeframe,o.signal_time,o.status,o.target,o.closed_at,o.checked_at, a.entry,a.stop_loss,a.tp1,a.tp2 "+
+        "FROM index_alert_outcomes o JOIN index_alerts a ON a.id=o.alert_id ORDER BY o.signal_time DESC LIMIT 200"
+       ).all();
+       return response({outcomes:rows.results??[],source:"Deriv completed M15 candles",kind:"hypothetical_signal_outcomes",feesIncluded:false},200,cors);
+      }catch{return response({error:"Outcome database migration not yet applied"},503,cors);}
+    }
     try {
       const rows=await env.TRADEPULSE_DB.prepare(
         "SELECT id,symbol,strategy,direction,timeframe,candle_time,created_at,expires_at,entry,stop_loss,tp1,tp2,quality_score FROM index_alerts ORDER BY created_at DESC LIMIT 50"

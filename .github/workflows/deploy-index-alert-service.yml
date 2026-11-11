@@ -45,5 +45,7 @@ jobs:
       - name: Confirm Cloudflare deployment credential is available
         run: |
           test -n "$CLOUDFLARE_API_TOKEN" || { echo "::error::CLOUDFLARE_API_TOKEN repository secret missing"; exit 1; }
+      - name: Apply additive index outcomes migration to existing D1
+        run: npx --yes wrangler@4 d1 execute tradepulse-telegram --remote --file=index-alert-service/outcomes-migration.sql --config index-alert-service/wrangler.jsonc
       - name: Deploy ONLY tradepulse-index-alert-service
         run: npx --yes wrangler@4 deploy --config index-alert-service/wrangler.jsonc

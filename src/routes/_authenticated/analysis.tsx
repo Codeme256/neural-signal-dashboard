@@ -7,6 +7,8 @@ import { buildFollowUpReport, type FollowUpGroup } from "@/lib/signal-follow-up"
 import { pairStrategyReviews } from "@/lib/pair-strategy-policy";
 import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { UserMenu } from "@/components/auth/UserMenu";
+import { SignalAnalysisAssistant } from "@/components/signal/SignalAnalysisAssistant";
+import { CloudIndexOutcomes } from "@/components/signal/CloudIndexOutcomes";
 import { fetchCandlesRange } from "@/lib/candle-store";
 import { isAbortError } from "@/lib/deriv-client";
 import { EXPIRY_CANDLES, evaluateOutcome, isFinal, summarize, type TrackedSignal } from "@/lib/signal-tracker";
@@ -120,6 +122,9 @@ function AnalysisPage() {
         <p className="mt-2 font-mono text-[11px] text-muted-foreground">
           Win rate = won ÷ (won + lost) of your tracked signals only{sum.expired ? ` · ${sum.expired} expired not counted` : ""}. A small number of results says little about future performance.
         </p>
+
+        <div className="mt-6"><SignalAnalysisAssistant signals={list}/></div>
+        <CloudIndexOutcomes/>
 
         <section className="mt-8 space-y-3 rounded-xl border border-border bg-card/60 p-4">
           <h2 className="font-display text-lg font-bold">INDEX SCAN HISTORY</h2>
