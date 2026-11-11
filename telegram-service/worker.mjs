@@ -296,18 +296,39 @@ async function callbackMessage(callback,env) {
  return commandReply(env,id,id,callback.data.slice(4),[]);
 }
 
+function watchFrom(value){
+ if(!value||typeof value!=="object"||Array.isArray(value)||value.type!=="WATCH")return null;
+ const {id,symbol,strategy,timeframe,candleTime,bias,regime,createdAt}=value;
+ if(![id,symbol,strategy,timeframe,bias,regime].every(x=>typeof x==="string"&&x.length>0&&x.length<=160))return null;
+ if(timeframe!=="M15"||!["BULLISH","BEARISH"].includes(bias)||regime!=="TRENDING")return null;
+ if(!Number.isFinite(candleTime)||!Number.isFinite(createdAt)||Math.abs(Date.now()-createdAt)>5*60*1000||Date.now()-candleTime>6*60*1000)return null;
+ return {type:"WATCH",id,symbol,strategy,timeframe,candleTime,bias,regime,createdAt};
+}
 function alertFrom(value) {
   if(!value || typeof value!=="object" || Array.isArray(value))return null;
   const {id,symbol,strategy,direction,timeframe,entry,stopLoss,tp1,tp2,rr,candleTime}=value;
   if(![id,symbol,strategy,direction,timeframe].every(x=>typeof x==="string"&&x.length>0&&x.length<=160))return null;
   if(!["BUY","SELL"].includes(direction)||!["M1","M5","M15","M30","H1","H4"].includes(timeframe))return null;
   if(![entry,stopLoss,tp1,tp2,rr,candleTime].every(x=>typeof x==="number"&&Number.isFinite(x)))return null;
-  if(rr<2||rr>100||Math.abs(Date.now()-candleTime)>2*60*60*1000)return null;
+  if(rr<2||rr>100||Date.now()<candleTime||Date.now()-candleTime>5*60*1000)return null;
+  const {verifiedAt,currentPrice,quoteTime}=value;
+  if(![verifiedAt,currentPrice,quoteTime].every(x=>typeof x==="number"&&Number.isFinite(x)))return null;
+  if(verifiedAt>Date.now()+10000||Date.now()-verifiedAt>30000||quoteTime>Date.now()+10000||Date.now()-quoteTime>120000)return null;
+  const risk=Math.abs(entry-stopLoss);
+  if(risk<=0||Math.abs(currentPrice-entry)>0.25*risk)return null;
+  if(direction==="BUY"?(currentPrice>=tp1||currentPrice<=stopLoss):(currentPrice<=tp1||currentPrice>=stopLoss))return null;
   if(!(direction==="BUY"?stopLoss<entry&&tp1>entry&&tp2>=tp1:stopLoss>entry&&tp1<entry&&tp2<=tp1))return null;
-  return {id,symbol,strategy,direction,timeframe,entry,stopLoss,tp1,tp2,rr,candleTime};
+  return {id,symbol,strategy,direction,timeframe,entry,stopLoss,tp1,tp2,rr,candleTime,currentPrice,quoteTime,verifiedAt};
 }
 function signalText(a) {
-  return `TradePulse ${a.direction} · ${a.symbol}\nTimeframe: ${a.timeframe}\nStrategy: ${a.strategy}\nEntry: ${a.entry}\nSL: ${a.stopLoss}\nTP1: ${a.tp1}\nTP2: ${a.tp2}\nR:R: 1:${a.rr}\nCandle: ${new Date(a.candleTime).toISOString()}\n\nTechnical signal only; not a guaranteed outcome or trade execution.`;
+ if(a.type==="WATCH"){
+  return "👀 APEX EARLY SETUP WATCH · "+a.symbol+
+   "\nM15 candle: "+new Date(a.candleTime).toISOString()+
+   "\nH1 trend context: "+a.bias+
+   "\nRegime: "+a.regime+
+   "\n\nNO ENTRY YET. This is directional context, NOT a confirmed trade. Wait for completed-candle strategy confirmation and a fresh price/entry validation; a confirmed alert may never occur.";
+ }
+  return `TradePulse ${a.direction} · ${a.symbol}\nTimeframe: ${a.timeframe}\nStrategy: ${a.strategy}\nEntry: ${a.entry}\nSL: ${a.stopLoss}\nTP1: ${a.tp1}\nTP2: ${a.tp2}\nR:R: 1:${a.rr}\nCandle: ${new Date(a.candleTime).toISOString()}\nVerified market quote: ${a.currentPrice} at ${new Date(a.quoteTime).toISOString()}\n\nEntry was within 0.25R of the live quote when verified; recheck before acting. Technical signal only; not a guaranteed outcome or trade execution.`;
 }
 async function broadcast(env, a) {
   const db=env.TRADEPULSE_DB;
@@ -405,7 +426,7 @@ export default {
   }
 
   if(url.pathname==="/health"&&request.method==="GET")
-    return respond({service:"tradepulse-telegram",ready:!!(hasDb(env)&&botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN)&&env.TELEGRAM_WEBHOOK_SECRET),mode:"standalone",signalSourceConnected:false});
+    return respond({service:"tradepulse-telegram",ready:!!(hasDb(env)&&botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN)&&env.TELEGRAM_WEBHOOK_SECRET),mode:"standalone",signalSourceConnected:!!(hasDb(env)&&env.TRADEPULSE_PUBLISH_SECRET)});
   if(url.pathname==="/telegram/webhook"){
     if(request.method!=="POST")return respond({error:"Method not allowed"},405);
     if(!await verifySecret(request.headers.get("X-Telegram-Bot-Api-Secret-Token"),env.TELEGRAM_WEBHOOK_SECRET))
@@ -466,8 +487,8 @@ export default {
         await telegram(env,"sendMessage",{chat_id:env.TRADEPULSE_TELEGRAM_CHANNEL_ID,text:"✅ Independent TradePulse Telegram service is connected. This is a test message, not a trading signal."});
         return respond({sent:true});
       }
-      const raw=await requestBody(request),a=alertFrom(raw);
-      if(!a)return respond({error:"Invalid signal; include confirmed timestamp and minimum 1:2 R:R"},400);
+      const raw=await requestBody(request),a=watchFrom(raw)??alertFrom(raw);
+      if(!a)return respond({error:"Invalid watch or signal; confirmed entries require fresh timestamps and minimum 1:2 R:R"},400);
       return respond(await broadcast(env,a));
     }catch{return respond({error:"Delivery failed"},503);}
   }

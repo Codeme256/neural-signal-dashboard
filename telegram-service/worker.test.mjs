@@ -16,7 +16,7 @@ test("standalone service reports configuration, not user credentials",async()=>{
  const out=await read(await worker.fetch(request("/health"),ENV));
  assert.equal(out.status,200);
  assert.equal(out.body.ready,true);
- assert.equal(out.body.signalSourceConnected,false);
+ assert.equal(out.body.signalSourceConnected,true);
  assert.equal(JSON.stringify(out.body).includes(ENV.TRADEPULSE_TELEGRAM_BOT_TOKEN),false);
 });
 test("webhook requires verified Telegram header",async()=>{
@@ -127,4 +127,34 @@ test("status only exposes actual signal and broker status",async()=>{
   assert.match(sent.text,/signal-only/);
   assert.match(sent.text,/no|none|not configured/i);
  }finally{globalThis.fetch=originalFetch;}
+});
+
+test("early WATCH reaches configured channel and subscribers without an entry price",async()=>{
+ const now=Date.now();
+ const sent=[];
+ const originalFetch=globalThis.fetch;
+ const env={...ENV,TRADEPULSE_DB:{prepare(sql){
+  if(sql.includes("telegram_subscriptions"))return {all:async()=>({results:[{user_id:"sub",telegram_chat_id:"123456789"}]})};
+  if(sql.includes("INSERT OR IGNORE INTO telegram_alert_delivery"))return {bind:()=>({run:async()=>({meta:{changes:1}})})};
+  throw Error("Unexpected SQL "+sql);
+ }}};
+ try{
+  globalThis.fetch=async(_url,opts)=>{sent.push(JSON.parse(opts.body));return Response.json({ok:true,result:{message_id:1}});};
+  const res=await read(await worker.fetch(request("/publish",{method:"POST",headers:{Authorization:"Bearer "+ENV.TRADEPULSE_PUBLISH_SECRET,"content-type":"application/json"},body:JSON.stringify({
+   type:"WATCH",id:"index:test:WATCH",symbol:"US500",strategy:"Higher-timeframe trend watch",timeframe:"M15",
+   candleTime:now-30000,bias:"BULLISH",regime:"TRENDING",createdAt:now,
+  })}),env));
+  assert.equal(res.status,200);
+  assert.equal(res.body.sent,2);
+  assert.ok(sent.every(x=>x.text.includes("NO ENTRY YET")&&!x.text.includes("SL:")));
+ }finally{globalThis.fetch=originalFetch;}
+});
+test("old entry without new quote verification is rejected before broadcasting",async()=>{
+ const now=Date.now();
+ const env={...ENV,TRADEPULSE_DB:{prepare(){throw Error("No DB query should occur");}}};
+ const res=await read(await worker.fetch(request("/publish",{method:"POST",headers:{Authorization:"Bearer "+ENV.TRADEPULSE_PUBLISH_SECRET,"content-type":"application/json"},body:JSON.stringify({
+  id:"old",symbol:"US500",strategy:"Trend Continuation",direction:"BUY",timeframe:"M15",
+  entry:100,stopLoss:99,tp1:102,tp2:103,rr:2,candleTime:now-45*60000
+ })}),env));
+ assert.equal(res.status,400);
 });
