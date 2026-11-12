@@ -90,7 +90,7 @@ function makeRequester(ws: WebSocket) {
 
 type Watch={type:"WATCH";id:string;symbol:string;strategy:string;timeframe:Timeframe;
  candleTime:number;bias:"BULLISH"|"BEARISH";regime:string;createdAt:number;
- entryZoneLow?:number;entryZoneHigh?:number;expiresAt?:number};
+ entryZoneLow?:number;entryZoneHigh?:number;expiresAt?:number;verifiedPrice?:number;quoteTime?:number;dataSource?:string};
 async function publishTelegram(env: Env, a: Alert|Watch): Promise<boolean> {
   if (!env.TELEGRAM_PUBLISH_URL || !env.TRADEPULSE_PUBLISH_SECRET) return false;
   const parsed = new URL(env.TELEGRAM_PUBLISH_URL);
@@ -270,7 +270,11 @@ async function scheduledScan(env: Env) {
   const request=makeRequester(ws);
   try {
     const active=await request({active_symbols:"brief"});
-    const markets=parseDerivMarkets(active.active_symbols).filter(m=>m.category==="INDEX"&&m.open).slice(0,MAX_MARKETS);
+    const markets=parseDerivMarkets(active.active_symbols)
+      .filter(m=>m.category==="INDEX"&&m.open&&!/^OTC[_-]/i.test(m.derivSymbol)&&
+        !/\\bOTC\\b/i.test(m.symbol))
+      .slice(0,MAX_MARKETS);
+    // Empty is intentional: never fabricate an exchange-backed setup from OTC feeds.
     for (const m of markets) {
       try {
         const raw = await request({
@@ -287,25 +291,9 @@ async function scheduledScan(env: Env) {
           strategy:"all",enabled:["trend"],now,
         });
         scanned++;
-        // Pre-confirmation WATCH: directional context on a completed M15 candle.
-        // No entry/SL/TP and no implied order; recipients see a WATCH label.
-        if(result.action==="WAIT" && result.lastCandleTime!==null &&
-          result.higherTrend!=="NEUTRAL" && result.marketRegime==="TRENDING" &&
-          now-result.lastCandleTime>=0 && now-result.lastCandleTime<=5*60*1000 &&
-          watchSent<MAX_WATCHES_PER_SCAN){
-          const closed=candles.filter(c=>c.time+TF_SECONDS.M15*1000<=now);
-          const last=closed.at(-1);
-          const aligned=last&&(result.higherTrend==="BULLISH"?last.close>last.open:last.close<last.open);
-          if(aligned){
-            const hour=Math.floor(result.lastCandleTime/(60*60*1000));
-            const watch:Watch={type:"WATCH",id:[m.derivSymbol,"WATCH",hour].join(":"),
-             symbol:m.symbol,strategy:"Higher-timeframe trend watch",timeframe:TF,
-             candleTime:result.lastCandleTime,bias:result.higherTrend,
-             regime:result.marketRegime??"UNKNOWN",createdAt:now};
-            try{if(await publishTelegram(env,watch))watchSent++;}
-            catch{deliveryFailures++;}
-          }
-        }
+        // Never publish a WATCH without market-verified entry levels.
+        // OTC symbols are broker-specific prices, not verified exchange index feeds.
+        // For these instruments do not publish actionable alerts or WATCH banners.
         if (result.action!=="BUY"&&result.action!=="SELL") continue;
         if (result.score<MIN_QUALITY||result.lastCandleTime===null||
             result.entry===null||result.stopLoss===null||
@@ -331,10 +319,29 @@ async function scheduledScan(env: Env) {
         ).bind(a.id,a.symbol,a.deriv_symbol,a.strategy,a.direction,a.candle_time,a.created_at,a.expires_at,
           a.entry,a.stop_loss,a.tp1,a.tp2,a.rr,a.quality_score).run();
         if((insert.meta?.changes??0)!==1)continue;
+        // A pullback alert requires a verifiable recent quote within the proposed zone.
+        // If the price has already reached TP/SL, suppress the setup rather than
+        // publishing historical levels as if they were still actionable.
+        let watchQuote:number,watchQuoteTime:number;
+        try{
+          const tick=await request({ticks_history:m.derivSymbol,count:1,end:"latest",style:"ticks"});
+          watchQuote=Number((tick.history as {prices?:unknown[]}|undefined)?.prices?.at(-1));
+          watchQuoteTime=Number((tick.history as {times?:unknown[]}|undefined)?.times?.at(-1))*1000;
+          if(!Number.isFinite(watchQuote)||watchQuote<=0||!Number.isFinite(watchQuoteTime)||
+             watchQuoteTime>now+10_000||now-watchQuoteTime>90_000||
+             (a.direction==="BUY"?(watchQuote>=a.tp1||watchQuote<=a.stop_loss):(watchQuote<=a.tp1||watchQuote>=a.stop_loss))){
+            console.log("Pullback WATCH suppressed; quote stale or target/stop passed",m.derivSymbol);
+            continue;
+          }
+        }catch{
+          console.log("Pullback WATCH suppressed; live quote unavailable",m.derivSymbol);
+          continue;
+        }
         const watch:Watch={type:"WATCH",id:a.id+":PULLBACK",symbol:a.symbol,strategy:a.strategy,
           timeframe:TF,candleTime:a.candle_time,bias:a.direction==="BUY"?"BULLISH":"BEARISH",
           regime:"TRENDING",createdAt:now,entryZoneLow:Number(zone.low.toFixed(m.decimals)),
-          entryZoneHigh:Number(zone.high.toFixed(m.decimals)),expiresAt:a.expires_at};
+          entryZoneHigh:Number(zone.high.toFixed(m.decimals)),expiresAt:a.expires_at,
+          verifiedPrice:watchQuote,quoteTime:watchQuoteTime,dataSource:"Deriv broker index feed"};
         try{if(await publishTelegram(env,watch))watchSent++;}
         catch{deliveryFailures++;}
         // Only monitorPullbacks() can issue confirmed entries after a fresh M1 retest.

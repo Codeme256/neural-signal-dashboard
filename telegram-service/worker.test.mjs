@@ -143,6 +143,8 @@ test("early WATCH reaches configured channel and subscribers without an entry pr
   const res=await read(await worker.fetch(request("/publish",{method:"POST",headers:{Authorization:"Bearer "+ENV.TRADEPULSE_PUBLISH_SECRET,"content-type":"application/json"},body:JSON.stringify({
    type:"WATCH",id:"index:test:WATCH",symbol:"US500",strategy:"Higher-timeframe trend watch",timeframe:"M15",
    candleTime:now-30000,bias:"BULLISH",regime:"TRENDING",createdAt:now,
+   entryZoneLow:99.85,entryZoneHigh:100.15,expiresAt:now+600000,
+   verifiedPrice:100.4,quoteTime:now-5000,dataSource:"Deriv broker index feed",
   })}),env));
   assert.equal(res.status,200);
   assert.equal(res.body.sent,2);
@@ -218,4 +220,42 @@ test("final win and loss outcomes each send a distinct PNG with database-backed 
   await notifyFinalOutcomes(env);
   assert.equal(sent.length,2); // no repeated outcome announcements
  }finally{globalThis.fetch=original;}
+});
+
+test("rejects OTC index WATCH banner even if supplied numeric levels",async()=>{
+ const now=Date.now();
+ const input={type:"WATCH",id:"OTC_SX5E:WATCH",symbol:"OTC SX5E",strategy:"Higher-timeframe trend watch",
+  timeframe:"M15",candleTime:now-30000,bias:"BULLISH",regime:"TRENDING",createdAt:now,
+  entryZoneLow:3000,entryZoneHigh:3005,expiresAt:now+600000,
+  verifiedPrice:3003,quoteTime:now-5000,dataSource:"Deriv broker index feed"};
+ const env={...ENV,TRADEPULSE_DB:{prepare(){throw Error("Rejected alerts must not touch D1")}}};
+ const res=await read(await worker.fetch(request("/publish",{method:"POST",headers:{
+  Authorization:"Bearer "+ENV.TRADEPULSE_PUBLISH_SECRET,"content-type":"application/json"},
+  body:JSON.stringify(input)}),env));
+ assert.equal(res.status,400);
+});
+test("rejects missing pullback zone or expiry instead of showing NOT SET",async()=>{
+ const now=Date.now();
+ const input={type:"WATCH",id:"US500:WATCH",symbol:"US500",strategy:"Trend Pullback",
+  timeframe:"M15",candleTime:now-30000,bias:"BULLISH",regime:"TRENDING",createdAt:now,
+  verifiedPrice:6100,quoteTime:now-5000,dataSource:"Deriv broker index feed"};
+ const env={...ENV,TRADEPULSE_DB:{prepare(){throw Error("Rejected alerts must not touch D1")}}};
+ const res=await read(await worker.fetch(request("/publish",{method:"POST",headers:{
+  Authorization:"Bearer "+ENV.TRADEPULSE_PUBLISH_SECRET,"content-type":"application/json"},
+  body:JSON.stringify(input)}),env));
+ assert.equal(res.status,400);
+});
+test("rejects stale quote or expired pullback WATCH",async()=>{
+ const now=Date.now();
+ const base={type:"WATCH",id:"US500:WATCH",symbol:"US500",strategy:"Trend Pullback",
+  timeframe:"M15",candleTime:now-30000,bias:"BULLISH",regime:"TRENDING",createdAt:now,
+  entryZoneLow:99,entryZoneHigh:101,expiresAt:now+600000,
+  verifiedPrice:100,quoteTime:now-5000,dataSource:"Deriv broker index feed"};
+ const env={...ENV,TRADEPULSE_DB:{prepare(){throw Error("Rejected alerts must not touch D1")}}};
+ for(const input of [{...base,quoteTime:now-180000},{...base,expiresAt:now-2000}]){
+  const res=await read(await worker.fetch(request("/publish",{method:"POST",headers:{
+   Authorization:"Bearer "+ENV.TRADEPULSE_PUBLISH_SECRET,"content-type":"application/json"},
+   body:JSON.stringify(input)}),env));
+  assert.equal(res.status,400);
+ }
 });

@@ -28,6 +28,12 @@ test("separate outcome cards render for WIN and LOSS",async()=>{
 test("watch without an entry is rendered distinctly and does not invent prices",async()=>{
  const watch=await renderSignalBanner({type:"WATCH",symbol:"US500",strategy:"Trend Pullback",
   timeframe:"M15",bias:"BULLISH",zoneLow:6098,zoneHigh:6101,
-  candleTime:Date.now(),expiresAt:Date.now()+600000});
+  candleTime:Date.now(),expiresAt:Date.now()+600000,verifiedPrice:6102,
+  quoteTime:Date.now()-5000,dataSource:"Deriv broker index feed"});
  assert.deepEqual([...watch.subarray(0,8)],signature);
+});
+
+test("missing price evidence cannot generate Telegram WATCH banner",async()=>{
+ await assert.rejects(()=>renderSignalBanner({type:"WATCH",symbol:"OTC SX5E",strategy:"Trend Watch",
+ timeframe:"M15",bias:"BULLISH",candleTime:Date.now()}),/Invalid or stale price evidence/);
 });
