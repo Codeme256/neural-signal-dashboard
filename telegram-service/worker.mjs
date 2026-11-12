@@ -309,21 +309,33 @@ async function callbackMessage(callback,env) {
  return commandReply(env,id,id,callback.data.slice(4),[]);
 }
 
+// Broker-specific OTC index levels must not be represented as verified
+// exchange-market signals. Fail closed for unpriced, stale or OTC alerts.
+function unsupportedOtcMarket(...values){
+ return values.some(v=>typeof v==="string"&&/(?:^|[^A-Z])OTC(?:[_-]|\\b)/i.test(v));
+}
 function watchFrom(value){
  if(!value||typeof value!=="object"||Array.isArray(value)||value.type!=="WATCH")return null;
  const {id,symbol,strategy,timeframe,candleTime,bias,regime,createdAt}=value;
  if(![id,symbol,strategy,timeframe,bias,regime].every(x=>typeof x==="string"&&x.length>0&&x.length<=160))return null;
  if(timeframe!=="M15"||!["BULLISH","BEARISH"].includes(bias)||regime!=="TRENDING")return null;
  if(!Number.isFinite(candleTime)||!Number.isFinite(createdAt)||Math.abs(Date.now()-createdAt)>5*60*1000||Date.now()-candleTime>6*60*1000)return null;
- const {entryZoneLow,entryZoneHigh,expiresAt}=value;
- const hasZone=[entryZoneLow,entryZoneHigh,expiresAt].every(Number.isFinite)&&
-  entryZoneLow>0&&entryZoneLow<entryZoneHigh&&expiresAt>createdAt&&expiresAt>Date.now();
+ if(unsupportedOtcMarket(id,symbol,strategy))return null;
+ const {entryZoneLow,entryZoneHigh,expiresAt,verifiedPrice,quoteTime,dataSource}=value;
+ if(![entryZoneLow,entryZoneHigh,expiresAt,verifiedPrice,quoteTime].every(x=>
+   typeof x==="number"&&Number.isFinite(x)))return null;
+ if(!(entryZoneLow>0&&entryZoneLow<entryZoneHigh&&
+  expiresAt>createdAt&&expiresAt>Date.now()&&
+  verifiedPrice>0&&
+  quoteTime<=Date.now()+10000&&Date.now()-quoteTime<=90000&&
+  typeof dataSource==="string"&&dataSource.length>3&&dataSource.length<100))return null;
  return {type:"WATCH",id,symbol,strategy,timeframe,candleTime,bias,regime,createdAt,
-  ...(hasZone?{entryZoneLow,entryZoneHigh,expiresAt}:{})};
+   entryZoneLow,entryZoneHigh,expiresAt,verifiedPrice,quoteTime,dataSource};
 }
 function alertFrom(value) {
   if(!value || typeof value!=="object" || Array.isArray(value))return null;
   const {id,symbol,strategy,direction,timeframe,entry,stopLoss,tp1,tp2,rr,candleTime}=value;
+ if(unsupportedOtcMarket(id,symbol,strategy))return null;
   if(![id,symbol,strategy,direction,timeframe].every(x=>typeof x==="string"&&x.length>0&&x.length<=160))return null;
   if(!["BUY","SELL"].includes(direction)||!["M1","M5","M15","M30","H1","H4"].includes(timeframe))return null;
   if(![entry,stopLoss,tp1,tp2,rr,candleTime].every(x=>typeof x==="number"&&Number.isFinite(x)))return null;
@@ -347,6 +359,9 @@ function signalText(a) {
    "\nM15 candle: "+new Date(a.candleTime).toISOString()+
    "\nH1 trend context: "+a.bias+
    "\nRegime: "+a.regime+
+   "\nVerified price: "+a.verifiedPrice+
+   "\nQuote time: "+new Date(a.quoteTime).toISOString()+
+   "\nPrice source: "+a.dataSource+
    (a.entryZoneLow!==undefined?
      "\n\nPULLBACK WATCH ZONE: "+a.entryZoneLow+" – "+a.entryZoneHigh+
      "\nSetup expires: "+new Date(a.expiresAt).toISOString()+
@@ -357,7 +372,8 @@ function signalText(a) {
 }
 function alertCard(a){
  if(a.type==="WATCH")return {type:"WATCH",symbol:a.symbol,strategy:a.strategy,timeframe:a.timeframe,bias:a.bias,
-  zoneLow:a.entryZoneLow,zoneHigh:a.entryZoneHigh,expiresAt:a.expiresAt,candleTime:a.candleTime};
+  zoneLow:a.entryZoneLow,zoneHigh:a.entryZoneHigh,expiresAt:a.expiresAt,candleTime:a.candleTime,
+  verifiedPrice:a.verifiedPrice,quoteTime:a.quoteTime,dataSource:a.dataSource};
  return {type:"SIGNAL",symbol:a.symbol,strategy:a.strategy,timeframe:a.timeframe,direction:a.direction,
   entry:a.entry,stopLoss:a.stopLoss,tp1:a.tp1,tp2:a.tp2,rr:a.rr,score:a.score,
   currentPrice:a.currentPrice,verifiedAt:a.verifiedAt};
