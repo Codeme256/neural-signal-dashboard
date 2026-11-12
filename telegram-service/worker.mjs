@@ -364,6 +364,14 @@ function alertCard(a){
 }
 async function broadcast(env, a) {
   const db=env.TRADEPULSE_DB;
+  // The scanner records each confirmed index entry before publishing it.
+  // Recover its factual setup score from D1 when an older scanner version omits it.
+  if(a.type==="SIGNAL"&&a.score===null){
+   try{
+    const row=await db.prepare("SELECT quality_score FROM index_alerts WHERE id=? LIMIT 1").bind(a.id).first();
+    if(Number.isFinite(Number(row?.quality_score)))a.score=Math.min(100,Math.max(0,Number(row.quality_score)));
+   }catch{/* Present score as N/A rather than inventing confidence. */}
+  }
   const channels=str(env.TRADEPULSE_TELEGRAM_CHANNEL_ID).trim();
   const subscribers=await db.prepare("SELECT user_id,telegram_chat_id FROM telegram_subscriptions WHERE enabled=1 LIMIT 100").all();
   const targets=[...(channels?[{user_id:"__broadcast_channel__",telegram_chat_id:channels}]:[]),...(subscribers.results??[])];
