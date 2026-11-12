@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker,{notifyFinalOutcomes} from "./worker.mjs";
+import worker,{notifyFinalOutcomes,sendDailyNewsOverview} from "./worker.mjs";
 
 const ENV={
  TRADEPULSE_DB:{prepare(){ throw Error("No database query expected in this test"); }},
@@ -258,4 +258,40 @@ test("rejects stale quote or expired pullback WATCH",async()=>{
    body:JSON.stringify(input)}),env));
   assert.equal(res.status,400);
  }
+});
+
+test("daily news digest sends verified event schedule to channel and subscribers at 07:00 EAT",async()=>{
+ const saved=[],sent=[],clock=Date.parse("2026-11-13T04:05:00Z");
+ const env={...ENV,TRADEPULSE_DB:{prepare(sql){
+  if(sql.includes("SELECT telegram_chat_id FROM telegram_subscriptions"))return {all:async()=>({results:[{telegram_chat_id:"12345678"}]})};
+  if(sql.includes("INSERT OR IGNORE INTO news_alert_delivery"))return {bind:(...args)=>({run:async()=>{saved.push(args);return {meta:{changes:1}}}})};
+  throw Error("Unexpected SQL "+sql);
+ }}};
+ const before=globalThis.fetch;
+ try{
+  globalThis.fetch=async(url,opts)=>{assert.match(String(url),/sendMessage$/);sent.push(JSON.parse(opts.body));return Response.json({ok:true,result:{message_id:1}})};
+  const calendar={events:[{
+   id:"verified-gbp",currency:"GBP",event:"UK GDP",scheduledAt:"2026-11-13T07:00:00.000Z",actual:null
+  }],sources:["Forex Factory"]};
+  const out=await sendDailyNewsOverview(env,calendar,clock);
+  assert.equal(out.sent,2);assert.equal(out.matched,1);assert.equal(out.failed,0);
+  assert.equal(saved.length,2);assert.ok(saved.every(x=>x[1]==="DAILY"));
+  assert.ok(sent.every(x=>x.text.includes("UK GDP")&&x.text.includes("FOREX.com weekly calendar cross-check")));
+  assert.ok(sent.every(x=>!x.text.includes("BUY NOW")));
+  const skipped=await sendDailyNewsOverview(env,calendar,Date.parse("2026-11-13T06:00:00Z"));
+  assert.equal(skipped.sent,0);
+ }finally{globalThis.fetch=before}
+});
+test("public news diagnostics only exposes aggregate delivery counts",async()=>{
+ const env={...ENV,TRADEPULSE_DB:{prepare(sql){
+  if(sql.includes("COUNT(*) AS total FROM telegram_subscriptions"))return {first:async()=>({total:2})};
+  if(sql.includes("COUNT(*) AS total, MAX(sent_at)"))return {first:async()=>({total:0,latest:null})};
+  throw Error("Unexpected SQL "+sql);
+ }}};
+ const res=await read(await worker.fetch(request("/news/status"),env));
+ assert.equal(res.status,200);
+ assert.equal(res.body.activeSubscribers,2);
+ assert.equal(res.body.recordedReminders,0);
+ assert.ok(!JSON.stringify(res.body).includes(ENV.TRADEPULSE_TELEGRAM_BOT_TOKEN));
+ assert.equal(res.body.forexComReference,"https://www.forex.com/en-uk/trading-platforms/economic-calendar/");
 });

@@ -17,6 +17,9 @@ type NewsScan = { eventId:string;symbol:string;checkedAt:number;technicalBias:st
 type Calendar = {events:Event[];stale:boolean;updatedAt:string|null;source:string;
   coverage:string;forecastAvailable:boolean;note:string;attribution:string;sourceUrl:string};
 const NEWS_URL = "https://tradepulse-telegram-service.davidmwesigwa71.workers.dev/news/calendar";
+const NEWS_STATUS_URL = "https://tradepulse-telegram-service.davidmwesigwa71.workers.dev/news/status";
+const FOREX_COM_CALENDAR_URL = "https://www.forex.com/en-uk/trading-platforms/economic-calendar/";
+type DeliveryStatus={ready:boolean;activeSubscribers:number;recordedReminders:number;lastDeliveryAt:string|null;alertStages:string[]};
 const DISPLAY_PAIRS=["EURUSD","GBPUSD","USDJPY","USDCHF","USDCAD","AUDUSD","NZDUSD","XAUUSD","US 500","US Tech 100","Wall Street 30","DXY"];
 const eat=new Intl.DateTimeFormat("en-GB",{timeZone:"Africa/Kampala",weekday:"short",day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit",hour12:false});
 const utctime=new Intl.DateTimeFormat("en-GB",{timeZone:"UTC",hour:"2-digit",minute:"2-digit",hour12:false});
@@ -44,6 +47,7 @@ export function PreNewsCalendar(){
  const [resultsOpen,setResultsOpen]=useState(false);
  const [scannedEvent,setScannedEvent]=useState<Event|null>(null);
  const [autoEnabled,setAutoEnabled]=useState(false);
+ const [deliveryStatus,setDeliveryStatus]=useState<DeliveryStatus|null>(null);
  const [browserAllowed,setBrowserAllowed]=useState(false);
  const [autoStage,setAutoStage]=useState<string|null>(null);
  const [newsNotices,setNewsNotices]=useState<{key:string;eventId:string;symbol:string;message:string;at:number;read:boolean}[]>([]);
@@ -70,6 +74,19 @@ export function PreNewsCalendar(){
   const ticker=setInterval(()=>setNow(Date.now()),30000);
   const polling=setInterval(()=>void refresh(controller.signal),5*60000);
   return ()=>{controller.abort();clearInterval(ticker);clearInterval(polling);};
+ },[]);
+ useEffect(()=>{
+  let active=true;
+  const check=async()=>{
+   try{
+    const r=await fetch(NEWS_STATUS_URL,{cache:"no-store"});
+    if(!r.ok)throw Error("Status unavailable");
+    const j=await r.json() as DeliveryStatus;
+    if(active&&typeof j.activeSubscribers==="number")setDeliveryStatus(j);
+   }catch{if(active)setDeliveryStatus(null);}
+  };
+  void check();const poll=setInterval(()=>void check(),300000);
+  return ()=>{active=false;clearInterval(poll);};
  },[]);
  const upcoming=(calendar?.events??[]).filter(e=>Date.parse(e["scheduledAt"])>now-15*60000).slice(0,20);
  const chosenEvent=upcoming.find(e=>e.id===eventId)??upcoming[0]??null;
@@ -180,7 +197,16 @@ export function PreNewsCalendar(){
       className="rounded-lg border border-border px-3 py-2 text-xs font-bold disabled:opacity-50">
       {browserAllowed?"Browser notifications enabled":"Enable browser notifications"}
     </button>
-    <span className="text-xs text-muted-foreground">In-app popup while this page is open · Telegram reminders run separately on Cloudflare</span>
+    <span className="text-xs text-muted-foreground">In-app popup only while this page is open · Telegram reminders run separately on Cloudflare</span>
+   </div>
+   <div className="mt-3 rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
+    <div className="flex flex-wrap items-center gap-3">
+      <span>Telegram delivery: {deliveryStatus?.ready?"configured":"not verified"}</span>
+      <span>Active subscribers: {deliveryStatus?.activeSubscribers??"—"}</span>
+      <span>Recorded news deliveries: {deliveryStatus?.recordedReminders??"—"}</span>
+      <span>Latest delivery: {deliveryStatus?.lastDeliveryAt?eat.format(new Date(deliveryStatus.lastDeliveryAt))+" EAT":"none recorded"}</span>
+    </div>
+    <p className="mt-2">Telegram checks every five minutes. A verified 07:00 EAT daily briefing plus T-60/T-15 reminders are separate from browser alerts. <a className="text-primary underline" href={FOREX_COM_CALENDAR_URL} target="_blank" rel="noreferrer">Compare with FOREX.com weekly calendar</a> (editorial reference, not the automated feed).</p>
    </div>
    {newsNotices.length>0&&<div className="mt-4 rounded-xl border border-primary/20 bg-card/70 p-3">
     <div className="flex items-center justify-between gap-2"><h3 className="text-sm font-bold">🔔 PRE-NEWS ALERT INBOX ({newsNotices.filter(x=>!x.read).length} new)</h3>
