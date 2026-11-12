@@ -509,6 +509,43 @@ async function sendNewsReminder(env,event,stage,minutes) {
  }
  return {sent,failed};
 }
+// Daily overview means subscribers can see today's news even before T60/T15.
+async function sendDailyNewsOverview(env,calendar,now){
+ const eatDay=new Intl.DateTimeFormat("en-CA",{timeZone:"Africa/Kampala",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(now));
+ const eatClock=new Intl.DateTimeFormat("en-GB",{timeZone:"Africa/Kampala",hour:"2-digit",minute:"2-digit",hour12:false}).format(new Date(now));
+ // Worker runs every five minutes; a 20-minute window tolerates scheduling delays.
+ const [hour,minute]=eatClock.split(":").map(Number);
+ if(hour!==7||minute>=20)return {sent:0,failed:0,matched:0};
+ const today=calendar.events.filter(event=>
+  new Intl.DateTimeFormat("en-CA",{timeZone:"Africa/Kampala",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(event.scheduledAt))===eatDay
+  && Date.parse(event.scheduledAt)>now && event.actual==null);
+ if(!today.length)return {sent:0,failed:0,matched:0};
+ const dates=new Intl.DateTimeFormat("en-GB",{timeZone:"Africa/Kampala",hour:"2-digit",minute:"2-digit",hour12:false});
+ const digest="📰 APEX DAILY FOREX NEWS · "+eatDay+" (Uganda EAT)"+
+  "\nHigh-impact releases scheduled for today ("+today.length+"):\n"+
+  today.slice(0,18).map(e=>"• "+dates.format(new Date(e.scheduledAt))+" · "+e.currency+" · "+e.event).join("\n")+
+  (today.length>18?"\n+ "+(today.length-18)+" further events in calendar":"")+
+  "\n\nT60 and T15 reminders follow when the verified event approaches."+
+  "\nDirections remain UNKNOWN before released data. Times may be revised."+
+  "\nLive calendar sources: "+(calendar.sources??[calendar.source]).join(", ")+
+  "\nFOREX.com weekly calendar cross-check: https://www.forex.com/en-uk/trading-platforms/economic-calendar/";
+ const channel=str(env.TRADEPULSE_TELEGRAM_CHANNEL_ID).trim();
+ const subs=await env.TRADEPULSE_DB.prepare("SELECT telegram_chat_id FROM telegram_subscriptions WHERE enabled=1 LIMIT 100").all();
+ const targets=[...new Set([...(channel?[channel]:[]),...(subs.results??[]).map(r=>String(r.telegram_chat_id))])];
+ let sent=0,failed=0;
+ for(const chatId of targets){
+  if(!/^-?\\d{3,20}$/.test(chatId))continue;
+  const saved=await env.TRADEPULSE_DB.prepare(
+   "INSERT OR IGNORE INTO news_alert_delivery(event_id,stage,recipient,sent_at) VALUES(?,?,?,?)"
+  ).bind("daily:"+eatDay,"DAILY",chatId,new Date(now).toISOString()).run();
+  if((saved.meta?.changes??0)!==1)continue;
+  try{await telegram(env,"sendMessage",{chat_id:chatId,text:digest,disable_web_page_preview:true});sent++;}
+  catch(e){failed++;console.warn("Daily news Telegram failed",e instanceof Error?e.message:"unknown");
+   await env.TRADEPULSE_DB.prepare("DELETE FROM news_alert_delivery WHERE event_id=? AND stage=? AND recipient=?")
+    .bind("daily:"+eatDay,"DAILY",chatId).run();}
+ }
+ return {sent,failed,matched:today.length};
+}
 async function scanUpcomingNews(env) {
  if(!hasDb(env)||!botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN))
   throw Error("News reminders require Telegram bot and D1");
@@ -518,6 +555,7 @@ async function scanUpcomingNews(env) {
   return;
  }
  await ensureNewsTable(env);
+ const overview=await sendDailyNewsOverview(env,calendar,now);
  let matched=0,sent=0,failed=0;
  for(const event of calendar.events) {
   if(event.actual!==null)continue;
@@ -533,7 +571,8 @@ async function scanUpcomingNews(env) {
  const todayHigh=calendar.events.filter(e=>Date.parse(e.scheduledAt)>=todayStart&&Date.parse(e.scheduledAt)<todayEnd).length;
  const nextTwoHours=calendar.events.filter(e=>Date.parse(e.scheduledAt)>now&&Date.parse(e.scheduledAt)<=now+2*3600000).length;
  console.log("Pre-news scheduled scan",{source:calendar.source,sources:calendar.sources??[calendar.source],
-  checked:calendar.events.length,todayHigh,nextTwoHours,matched,sent,failed});
+  checked:calendar.events.length,todayHigh,nextTwoHours,matched,sent,failed,
+  overview:overview.matched,overviewSent:overview.sent,overviewFailed:overview.failed});
 }
 
 export default {
@@ -557,6 +596,23 @@ export default {
      {status:503,headers:{...HEADER,"Access-Control-Allow-Origin":"*"}});}
   }
 
+  if(url.pathname==="/news/status"&&request.method==="GET"){
+    if(!hasDb(env))return respond({ready:false,error:"News notification storage unavailable"},503);
+    try{
+      const [subs,delivery]=await Promise.all([
+       env.TRADEPULSE_DB.prepare("SELECT COUNT(*) AS total FROM telegram_subscriptions WHERE enabled=1").first(),
+       env.TRADEPULSE_DB.prepare("SELECT COUNT(*) AS total, MAX(sent_at) AS latest FROM news_alert_delivery").first()
+      ]);
+      return respond({ready:botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN),
+       cron:"*/5 * * * *",timezone:"Africa/Kampala",
+       activeSubscribers:subs?.total??0,recordedReminders:delivery?.total??0,
+       lastDeliveryAt:delivery?.latest??null,
+       alertStages:["07:00 EAT daily high-impact overview","60 minutes","15 minutes"],
+       liveSource:"ShowMyTrades, Forex Factory or XOOMAR when available",
+       forexComReference:"https://www.forex.com/en-uk/trading-platforms/economic-calendar/",
+       note:"FOREX.com is a human-readable weekly cross-check, not an authenticated machine-readable calendar feed."});
+    }catch{return respond({ready:false,error:"News status unavailable"},503);}
+  }
   if(url.pathname==="/health"&&request.method==="GET")
     return respond({service:"tradepulse-telegram",ready:!!(hasDb(env)&&botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN)&&env.TELEGRAM_WEBHOOK_SECRET),mode:"standalone",signalSourceConnected:!!(hasDb(env)&&env.TRADEPULSE_PUBLISH_SECRET)});
   if(url.pathname==="/telegram/webhook"){
