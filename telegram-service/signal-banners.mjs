@@ -110,9 +110,10 @@ function lines(input){
   return {
    status:"WAIT FOR ENTRY",accent:COLORS.amber,
    rows:[["SYMBOL",input.symbol],["STRATEGY",input.strategy],["TIMEFRAME",input.timeframe],
-   ["BIAS",input.bias],["PULLBACK LOW",input.zoneLow==null?"NOT SET":fmt(input.zoneLow)],
-   ["PULLBACK HIGH",input.zoneHigh==null?"NOT SET":fmt(input.zoneHigh)],
-   ["EXPIRES",input.expiresAt?dateEAT(input.expiresAt):"UNKNOWN"]],
+   ["BIAS",input.bias],["VERIFIED QUOTE",fmt(input.verifiedPrice)],
+   ["PULLBACK LOW",fmt(input.zoneLow)],["PULLBACK HIGH",fmt(input.zoneHigh)],
+   ["EXPIRES",dateEAT(input.expiresAt)],
+   ["QUOTE SOURCE",input.dataSource],["QUOTE TIME",dateEAT(input.quoteTime)]],
    analysis:["NO CONFIRMED ENTRY","WAIT FOR M1 RETEST","CANCEL IF TARGET OR STOP HIT"],
    stamp:dateEAT(input.candleTime),footer:"WATCH ONLY / NOT AN ENTRY SIGNAL"
   };
@@ -136,6 +137,11 @@ function lines(input){
 }
 function drawCard(input){
  if(!input||!["SIGNAL","WATCH","WON","LOST"].includes(input.type))throw Error("Unknown banner type");
+ if(input.type==="WATCH"&&(![input.zoneLow,input.zoneHigh,input.expiresAt,input.verifiedPrice,input.quoteTime].every(x=>typeof x==="number"&&Number.isFinite(x))||
+  input.zoneLow<=0||input.zoneHigh<=input.zoneLow||input.expiresAt<=Date.now()||
+  input.verifiedPrice<=0||input.quoteTime>Date.now()+10000||Date.now()-input.quoteTime>90000||
+  typeof input.dataSource!=="string"||!input.dataSource.length))
+   throw Error("Invalid or stale price evidence for WATCH banner");
  const p=new Uint8Array(W*H*4),a=lines(input);
  for(let y=0;y<H;y++){
   const j=y*W*4;
