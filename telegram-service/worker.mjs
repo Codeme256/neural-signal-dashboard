@@ -353,7 +353,7 @@ function signalText(a) {
      "\nWait for a later completed M1 pullback rejection and fresh price inside this zone.":"")+
    "\n\nNO ENTRY YET. If TP or SL was reached before retest the setup is invalid; a confirmed trade alert may never occur.";
  }
-  return `TradePulse ${a.direction} · ${a.symbol}\nTimeframe: ${a.timeframe}\nStrategy: ${a.strategy}\nEntry: ${a.entry}\nSL: ${a.stopLoss}\nTP1: ${a.tp1}\nTP2: ${a.tp2}\nR:R: 1:${a.rr}\nCandle: ${new Date(a.candleTime).toISOString()}\nVerified market quote: ${a.currentPrice} at ${new Date(a.quoteTime).toISOString()}\n\nEntry was within 0.25R of the live quote when verified; recheck before acting. Technical signal only; not a guaranteed outcome or trade execution.`;
+  return `APEX SIGNAL TANK ${a.direction} · ${a.symbol}\nTimeframe: ${a.timeframe}\nStrategy: ${a.strategy}\nEntry: ${a.entry}\nSL: ${a.stopLoss}\nTP1: ${a.tp1}\nTP2: ${a.tp2}\nR:R: 1:${a.rr}\nCandle: ${new Date(a.candleTime).toISOString()}\nVerified market quote: ${a.currentPrice} at ${new Date(a.quoteTime).toISOString()}\n\nEntry was within 0.25R of the live quote when verified; recheck before acting. Technical signal only; not a guaranteed outcome or trade execution.`;
 }
 function alertCard(a){
  if(a.type==="WATCH")return {type:"WATCH",symbol:a.symbol,strategy:a.strategy,timeframe:a.timeframe,bias:a.bias,
@@ -388,7 +388,7 @@ async function broadcast(env, a) {
  * published. No fabricated trade P/L or hindsight "reasons".
  * D1 primary key prevents repeated channel/subscriber outcome cards.
  */
-async function notifyFinalOutcomes(env){
+export async function notifyFinalOutcomes(env){
  if(!hasDb(env)||!botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN))return;
  const now=Date.now();
  const results=await env.TRADEPULSE_DB.prepare(
