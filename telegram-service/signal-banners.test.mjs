@@ -23,7 +23,7 @@ test("separate outcome cards render for WIN and LOSS",async()=>{
  const won=await renderSignalBanner({...settled,type:"WON"});
  const lost=await renderSignalBanner({...settled,type:"LOST"});
  assert.deepEqual([...won.subarray(0,8)],signature);
- assert.notDeepEqual([...won], [...lost]);
+ assert.notEqual(createHash("sha256").update(won).digest("hex"),createHash("sha256").update(lost).digest("hex"));
 });
 test("watch without an entry is rendered distinctly and does not invent prices",async()=>{
  const watch=await renderSignalBanner({type:"WATCH",symbol:"US500",strategy:"Trend Pullback",
