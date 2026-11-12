@@ -1,4 +1,5 @@
 import { fetchEconomicCalendar, formatEventReminder } from "./news-calendar.mjs";
+import { renderSignalBanner } from "./signal-banners.mjs";
 /** Independent TradePulse Telegram notification Worker.
  * No Supabase, no TradePulse browser dependencies, no MT5/trade execution.
  * One shared bot; private /start & /stop subscriptions; optional channel broadcasting.
@@ -22,6 +23,18 @@ async function telegram(env, method, params) {
   const result = await response.json().catch(() => ({}));
   if (!response.ok || result.ok !== true) throw new Error("Telegram API delivery rejected");
   return result.result;
+}
+async function telegramPhoto(env,chatId,card,caption) {
+ if(!botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN))throw Error("Telegram bot unavailable");
+ const png=await renderSignalBanner(card);
+ const form=new FormData();
+ form.set("chat_id",String(chatId));
+ form.set("caption",String(caption).slice(0,1024));
+ form.set("photo",new Blob([png],{type:"image/png"}),"apex-"+card.type.toLowerCase()+".png");
+ const response=await fetch(`https://api.telegram.org/bot${env.TRADEPULSE_TELEGRAM_BOT_TOKEN}/sendPhoto`,{method:"POST",body:form});
+ const json=await response.json().catch(()=>({}));
+ if(!response.ok||json.ok!==true)throw Error("Telegram image upload rejected");
+ return json.result;
 }
 async function verifySecret(provided, expected) {
   if (!provided || !expected || provided.length > 512) return false;
@@ -322,7 +335,11 @@ function alertFrom(value) {
   if(risk<=0||Math.abs(currentPrice-entry)>0.25*risk)return null;
   if(direction==="BUY"?(currentPrice>=tp1||currentPrice<=stopLoss):(currentPrice<=tp1||currentPrice>=stopLoss))return null;
   if(!(direction==="BUY"?stopLoss<entry&&tp1>entry&&tp2>=tp1:stopLoss>entry&&tp1<entry&&tp2<=tp1))return null;
-  return {id,symbol,strategy,direction,timeframe,entry,stopLoss,tp1,tp2,rr,candleTime,currentPrice,quoteTime,verifiedAt};
+  const setupScore=Number(value.setupScore);
+  const score=Number.isFinite(setupScore)&&setupScore>=0&&setupScore<=100?Math.round(setupScore):null;
+  const expiresAt=Number(value.expiresAt);
+  return {type:"SIGNAL",id,symbol,strategy,direction,timeframe,entry,stopLoss,tp1,tp2,rr,candleTime,currentPrice,quoteTime,verifiedAt,
+   score,expiresAt:Number.isFinite(expiresAt)&&expiresAt>verifiedAt?expiresAt:null};
 }
 function signalText(a) {
  if(a.type==="WATCH"){
@@ -338,6 +355,13 @@ function signalText(a) {
  }
   return `TradePulse ${a.direction} · ${a.symbol}\nTimeframe: ${a.timeframe}\nStrategy: ${a.strategy}\nEntry: ${a.entry}\nSL: ${a.stopLoss}\nTP1: ${a.tp1}\nTP2: ${a.tp2}\nR:R: 1:${a.rr}\nCandle: ${new Date(a.candleTime).toISOString()}\nVerified market quote: ${a.currentPrice} at ${new Date(a.quoteTime).toISOString()}\n\nEntry was within 0.25R of the live quote when verified; recheck before acting. Technical signal only; not a guaranteed outcome or trade execution.`;
 }
+function alertCard(a){
+ if(a.type==="WATCH")return {type:"WATCH",symbol:a.symbol,strategy:a.strategy,timeframe:a.timeframe,bias:a.bias,
+  zoneLow:a.entryZoneLow,zoneHigh:a.entryZoneHigh,expiresAt:a.expiresAt,candleTime:a.candleTime};
+ return {type:"SIGNAL",symbol:a.symbol,strategy:a.strategy,timeframe:a.timeframe,direction:a.direction,
+  entry:a.entry,stopLoss:a.stopLoss,tp1:a.tp1,tp2:a.tp2,rr:a.rr,score:a.score,
+  currentPrice:a.currentPrice,verifiedAt:a.verifiedAt};
+}
 async function broadcast(env, a) {
   const db=env.TRADEPULSE_DB;
   const channels=str(env.TRADEPULSE_TELEGRAM_CHANNEL_ID).trim();
@@ -349,7 +373,7 @@ async function broadcast(env, a) {
     const saved=await db.prepare("INSERT OR IGNORE INTO telegram_alert_delivery (user_id,signal_id,sent_at) VALUES (?,?,?)").bind(userId,a.id,new Date().toISOString()).run();
     if((saved.meta?.changes??0)===0){duplicate++;continue;}
     try {
-      await telegram(env,"sendMessage",{chat_id:chatId,text:signalText(a),disable_web_page_preview:true});
+      await telegramPhoto(env,chatId,alertCard(a),signalText(a));
       sent++;
     }catch{
       failed++;
@@ -359,6 +383,59 @@ async function broadcast(env, a) {
   return {sent,failed,duplicate,recipients:targets.length,truncated:(subscribers.results??[]).length===100};
 }
 
+/**
+ * Report only FINAL hypothetical OHLC results for alerts that were actually
+ * published. No fabricated trade P/L or hindsight "reasons".
+ * D1 primary key prevents repeated channel/subscriber outcome cards.
+ */
+async function notifyFinalOutcomes(env){
+ if(!hasDb(env)||!botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN))return;
+ const now=Date.now();
+ const results=await env.TRADEPULSE_DB.prepare(
+  "SELECT o.alert_id,o.status,o.target,o.closed_at,a.symbol,a.strategy,a.direction,a.timeframe,"+
+  "a.entry,a.stop_loss,a.tp1,a.tp2,a.created_at "+
+  "FROM index_alert_outcomes o JOIN index_alerts a ON a.id=o.alert_id "+
+  "WHERE o.status IN ('WON','LOST') AND o.closed_at IS NOT NULL "+
+  "AND a.notification_status='SENT' AND a.created_at>? AND o.closed_at>? "+
+  "ORDER BY o.closed_at DESC LIMIT 16"
+ ).bind(now-48*3600000,now-48*3600000).all();
+ const channel=str(env.TRADEPULSE_TELEGRAM_CHANNEL_ID).trim();
+ const users=await env.TRADEPULSE_DB.prepare(
+  "SELECT telegram_chat_id FROM telegram_subscriptions WHERE enabled=1 LIMIT 100"
+ ).all();
+ const targets=[...new Set([...(channel?[channel]:[]),...(users.results??[]).map(x=>String(x.telegram_chat_id))])];
+ let sent=0,failed=0;
+ for(const a of results.results??[]){
+  const type=a.status==="WON"?"WON":"LOST";
+  const target=a.status==="WON"?a.target:null;
+  if(type==="WON"&&!["TP1","TP2"].includes(target))continue;
+  const card={type,symbol:a.symbol,strategy:a.strategy,direction:a.direction,timeframe:a.timeframe,
+   entry:Number(a.entry),stopLoss:Number(a.stop_loss),tp1:Number(a.tp1),tp2:Number(a.tp2),
+   target,closedAt:Number(a.closed_at)};
+  const caption="APEX SIGNAL TANK | "+(type==="WON"?"WIN":"LOSS")+
+   "\n"+a.symbol+" "+a.direction+" / "+a.timeframe+
+   "\nRecorded: "+(type==="WON"?target+" touched":"SL touched before TP1")+
+   "\nEntry "+a.entry+" | SL "+a.stop_loss+" | TP1 "+a.tp1+" | TP2 "+a.tp2+
+   "\nOutcome time is an approximate completed-candle window, not a tick fill."+
+   "\nHYPOTHETICAL PRICE RESULT - NOT VERIFIED BROKER P/L. No fees/spreads included.";
+  for(const chatId of targets){
+   if(!/^-?\\d{3,20}$/.test(chatId))continue;
+   const key=a.alert_id+":"+type+":"+(target??"SL");
+   const claimed=await env.TRADEPULSE_DB.prepare(
+    "INSERT OR IGNORE INTO telegram_outcome_delivery (recipient,alert_id,outcome_key,sent_at) VALUES (?,?,?,?)"
+   ).bind(chatId,a.alert_id,key,new Date().toISOString()).run();
+   if((claimed.meta?.changes??0)!==1)continue;
+   try{await telegramPhoto(env,chatId,card,caption);sent++;}
+   catch(e){
+    failed++;console.warn("Outcome banner failed",a.alert_id,e instanceof Error?e.message:"Unknown");
+    await env.TRADEPULSE_DB.prepare(
+     "DELETE FROM telegram_outcome_delivery WHERE recipient=? AND alert_id=? AND outcome_key=?"
+    ).bind(chatId,a.alert_id,key).run();
+   }
+  }
+ }
+ console.log("APEX outcome banners",{checked:(results.results??[]).length,sent,failed});
+}
 /** D1 idempotency protects subscribers and channel from duplicate reminders across cron retries. */
 async function ensureNewsTable(env) {
  await env.TRADEPULSE_DB.prepare(
@@ -509,6 +586,7 @@ export default {
  },
  async scheduled(_controller,env,ctx) {
   ctx.waitUntil(scanUpcomingNews(env).catch(err=>console.error("Pre-news scan error:",err.message)));
+  ctx.waitUntil(notifyFinalOutcomes(env).catch(err=>console.error("Outcome banner scan failed:",err.message)));
  },
 
 };
