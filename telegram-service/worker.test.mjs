@@ -198,7 +198,7 @@ test("final win and loss outcomes each send a distinct PNG with database-backed 
   if(sql.startsWith("SELECT o.alert_id"))return {bind:()=>({all:async()=>({results:alerts})})};
   if(sql.startsWith("SELECT telegram_chat_id"))return {all:async()=>({results:[]})};
   if(sql.startsWith("INSERT OR IGNORE INTO telegram_outcome_delivery"))return {bind:(...params)=>({run:async()=>{
-   const key=params.join(":");if(claimed.has(key))return {meta:{changes:0}};
+   const key=params.slice(0,3).join(":");if(claimed.has(key))return {meta:{changes:0}};
    claimed.add(key);return {meta:{changes:1}};
   }})};
   if(sql.startsWith("DELETE FROM telegram_outcome_delivery"))return {bind:()=>({run:async()=>({})})};
