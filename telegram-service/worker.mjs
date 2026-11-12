@@ -510,7 +510,7 @@ async function sendNewsReminder(env,event,stage,minutes) {
  return {sent,failed};
 }
 // Daily overview means subscribers can see today's news even before T60/T15.
-async function sendDailyNewsOverview(env,calendar,now){
+export async function sendDailyNewsOverview(env,calendar,now){
  const eatDay=new Intl.DateTimeFormat("en-CA",{timeZone:"Africa/Kampala",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(now));
  const eatClock=new Intl.DateTimeFormat("en-GB",{timeZone:"Africa/Kampala",hour:"2-digit",minute:"2-digit",hour12:false}).format(new Date(now));
  // Worker runs every five minutes; a 20-minute window tolerates scheduling delays.
