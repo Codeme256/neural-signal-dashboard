@@ -409,7 +409,7 @@ async function scanUpcomingNews(env) {
   const result=await sendNewsReminder(env,event,stage,stage==="T60"?60:15);
   sent+=result.sent;failed+=result.failed;
  }
- const todayStart=new Date(new Date(now).toLocaleDateString("en-CA",{timeZone:"Africa/Kampala"})+"T00:00:00+03:00").getTime();
+ const todayStart=Date.parse(new Date(now+3*3600000).toISOString().slice(0,10)+"T00:00:00+03:00");
  const todayEnd=todayStart+86400000;
  const todayHigh=calendar.events.filter(e=>Date.parse(e.scheduledAt)>=todayStart&&Date.parse(e.scheduledAt)<todayEnd).length;
  const nextTwoHours=calendar.events.filter(e=>Date.parse(e.scheduledAt)>now&&Date.parse(e.scheduledAt)<=now+2*3600000).length;
