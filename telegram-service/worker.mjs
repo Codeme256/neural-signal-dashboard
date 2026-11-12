@@ -24,9 +24,9 @@ async function telegram(env, method, params) {
   if (!response.ok || result.ok !== true) throw new Error("Telegram API delivery rejected");
   return result.result;
 }
-async function telegramPhoto(env,chatId,card,caption) {
+async function telegramPhoto(env,chatId,card,caption,preparedPng=null) {
  if(!botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN))throw Error("Telegram bot unavailable");
- const png=await renderSignalBanner(card);
+ const png=preparedPng??await renderSignalBanner(card);
  const form=new FormData();
  form.set("chat_id",String(chatId));
  form.set("caption",String(caption).slice(0,1024));
@@ -368,12 +368,21 @@ async function broadcast(env, a) {
   const subscribers=await db.prepare("SELECT user_id,telegram_chat_id FROM telegram_subscriptions WHERE enabled=1 LIMIT 100").all();
   const targets=[...(channels?[{user_id:"__broadcast_channel__",telegram_chat_id:channels}]:[]),...(subscribers.results??[])];
   let sent=0,failed=0,duplicate=0;
+  let png=null;
+  try{if(targets.length)png=await renderSignalBanner(alertCard(a));}
+  catch(e){console.warn("Telegram signal card unavailable, retaining text delivery",e instanceof Error?e.message:"Unknown");}
   for(const target of targets){
     const userId=target.user_id,chatId=target.telegram_chat_id;
     const saved=await db.prepare("INSERT OR IGNORE INTO telegram_alert_delivery (user_id,signal_id,sent_at) VALUES (?,?,?)").bind(userId,a.id,new Date().toISOString()).run();
     if((saved.meta?.changes??0)===0){duplicate++;continue;}
     try {
-      await telegramPhoto(env,chatId,alertCard(a),signalText(a));
+      if(png){
+       try{await telegramPhoto(env,chatId,alertCard(a),signalText(a),png);}
+       catch(e){
+        console.warn("Telegram image upload unavailable; sending factual text instead",e instanceof Error?e.message:"Unknown");
+        await telegram(env,"sendMessage",{chat_id:chatId,text:signalText(a)+"\\n[Image banner unavailable]",disable_web_page_preview:true});
+       }
+      }else await telegram(env,"sendMessage",{chat_id:chatId,text:signalText(a)+"\\n[Image banner unavailable]",disable_web_page_preview:true});
       sent++;
     }catch{
       failed++;
@@ -418,6 +427,9 @@ export async function notifyFinalOutcomes(env){
    "\nEntry "+a.entry+" | SL "+a.stop_loss+" | TP1 "+a.tp1+" | TP2 "+a.tp2+
    "\nOutcome time is an approximate completed-candle window, not a tick fill."+
    "\nHYPOTHETICAL PRICE RESULT - NOT VERIFIED BROKER P/L. No fees/spreads included.";
+  let png=null;
+  try{if(targets.length)png=await renderSignalBanner(card);}
+  catch(e){console.warn("Outcome PNG render unavailable, retaining text delivery",e instanceof Error?e.message:"Unknown");}
   for(const chatId of targets){
    if(!/^-?\d{3,20}$/.test(chatId))continue;
    const key=a.alert_id+":"+type+":"+(target??"SL");
@@ -425,7 +437,13 @@ export async function notifyFinalOutcomes(env){
     "INSERT OR IGNORE INTO telegram_outcome_delivery (recipient,alert_id,outcome_key,sent_at) VALUES (?,?,?,?)"
    ).bind(chatId,a.alert_id,key,new Date().toISOString()).run();
    if((claimed.meta?.changes??0)!==1)continue;
-   try{await telegramPhoto(env,chatId,card,caption);sent++;}
+   try{
+    if(png){
+     try{await telegramPhoto(env,chatId,card,caption,png);}
+     catch{await telegram(env,"sendMessage",{chat_id:chatId,text:caption+"\\n[Image banner unavailable]",disable_web_page_preview:true});}
+    }else await telegram(env,"sendMessage",{chat_id:chatId,text:caption+"\\n[Image banner unavailable]",disable_web_page_preview:true});
+    sent++;
+   }
    catch(e){
     failed++;console.warn("Outcome banner failed",a.alert_id,e instanceof Error?e.message:"Unknown");
     await env.TRADEPULSE_DB.prepare(
