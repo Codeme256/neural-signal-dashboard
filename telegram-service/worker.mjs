@@ -419,7 +419,7 @@ async function notifyFinalOutcomes(env){
    "\nOutcome time is an approximate completed-candle window, not a tick fill."+
    "\nHYPOTHETICAL PRICE RESULT - NOT VERIFIED BROKER P/L. No fees/spreads included.";
   for(const chatId of targets){
-   if(!/^-?\\d{3,20}$/.test(chatId))continue;
+   if(!/^-?\d{3,20}$/.test(chatId))continue;
    const key=a.alert_id+":"+type+":"+(target??"SL");
    const claimed=await env.TRADEPULSE_DB.prepare(
     "INSERT OR IGNORE INTO telegram_outcome_delivery (recipient,alert_id,outcome_key,sent_at) VALUES (?,?,?,?)"
