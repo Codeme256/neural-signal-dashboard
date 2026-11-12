@@ -409,7 +409,12 @@ async function scanUpcomingNews(env) {
   const result=await sendNewsReminder(env,event,stage,stage==="T60"?60:15);
   sent+=result.sent;failed+=result.failed;
  }
- console.log("Pre-news scheduled scan",{source:calendar.source,checked:calendar.events.length,matched,sent,failed});
+ const todayStart=Date.parse(new Date(now+3*3600000).toISOString().slice(0,10)+"T00:00:00+03:00");
+ const todayEnd=todayStart+86400000;
+ const todayHigh=calendar.events.filter(e=>Date.parse(e.scheduledAt)>=todayStart&&Date.parse(e.scheduledAt)<todayEnd).length;
+ const nextTwoHours=calendar.events.filter(e=>Date.parse(e.scheduledAt)>now&&Date.parse(e.scheduledAt)<=now+2*3600000).length;
+ console.log("Pre-news scheduled scan",{source:calendar.source,sources:calendar.sources??[calendar.source],
+  checked:calendar.events.length,todayHigh,nextTwoHours,matched,sent,failed});
 }
 
 export default {

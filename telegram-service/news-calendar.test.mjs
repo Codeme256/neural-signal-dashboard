@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {normalizeEconomicEvent,normalizeEconomicCalendar,normalizeSecondaryCalendar,fetchEconomicCalendar,formatEventReminder} from "./news-calendar.mjs";
+import {normalizeEconomicEvent,normalizeEconomicCalendar,normalizeSecondaryCalendar,fetchEconomicCalendar,normalizeForexFactoryCalendar,formatEventReminder} from "./news-calendar.mjs";
 const raw={
  source:"bls",eventName:"CPI (Consumer Price Index)",importance:"high",
  scheduledAt:"2026-11-13T13:30:00.000Z",periodLabel:"October 2026",
@@ -64,9 +64,43 @@ test("fallback handles primary provider HTTP failure without inventing event dat
    ]});
   };
   const result=await fetchEconomicCalendar(now);
-  assert.equal(hits,2);
+  assert.equal(hits,3);
   assert.equal(result.source,"ShowMyTrades");
   assert.equal(result.fallbackUsed,true);
   assert.equal(result.events.length,1);
+ }finally{globalThis.fetch=original;}
+});
+
+test("Forex Factory high-impact GBP GDP is included with timezone-safe release time",()=>{
+ const now=Date.parse("2026-11-12T05:30:00Z");
+ const rows=[
+  {title:"GDP m/m",country:"GBP",date:"2026-11-12T07:00:00+00:00",impact:"High",forecast:"0.0%",previous:"0.1%"},
+  {title:"Goods Trade Balance",country:"GBP",date:"2026-11-12T07:00:00+00:00",impact:"Low"},
+  {title:"Unknown time",country:"GBP",date:"2026-11-12",impact:"High"},
+ ];
+ const r=normalizeForexFactoryCalendar(rows,now);
+ assert.equal(r.events.length,1);
+ assert.equal(r.events[0].currency,"GBP");
+ assert.equal(r.events[0].scheduledAt,"2026-11-12T07:00:00.000Z");
+ assert.equal(r.events[0].impact,"HIGH");
+ assert.equal(r.events[0].forecast,"0.0%");
+});
+test("merge all healthy sources so a US-only primary cannot suppress GBP high-impact news",async()=>{
+ const original=globalThis.fetch;
+ const now=Date.parse("2026-11-12T05:30:00Z");
+ try{
+  globalThis.fetch=async url=>{
+   const path=String(url);
+   if(path.includes("xoomar"))return Response.json({updatedAt:new Date(now).toISOString(),data:[
+    {...raw,scheduledAt:"2026-11-12T15:00:00Z",eventName:"Existing Home Sales"}
+   ]});
+   if(path.includes("showmytrades"))return Response.json({generated_at:new Date(now).toISOString(),events:[]});
+   return Response.json([{title:"GDP m/m",country:"GBP",date:"2026-11-12T07:00:00+00:00",impact:"High",forecast:"0.0%",previous:"0.1%"}]);
+  };
+  const calendar=await fetchEconomicCalendar(now);
+  assert.equal(calendar.events.length,2);
+  assert.ok(calendar.events.some(e=>e.currency==="GBP"&&e.event==="GDP m/m"));
+  assert.ok(calendar.events.some(e=>e.currency==="USD"));
+  assert.deepEqual(calendar.sources,["XOOMAR","Forex Factory"]);
  }finally{globalThis.fetch=original;}
 });
