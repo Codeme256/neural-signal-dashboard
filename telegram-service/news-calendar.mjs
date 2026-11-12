@@ -115,7 +115,7 @@ export function normalizeForexFactoryCalendar(json,now=Date.now()){
   const timestamp=Date.parse(rawDate);
   const impact=String(item?.impact??"").toLowerCase();
   if(!currencyEffects[currency]||impact!=="high"||!name||!Number.isFinite(timestamp)||
-    !/(?:Z|[+-]\\d{2}:\\d{2})$/i.test(rawDate))return [];
+    !/(?:Z|[+-]\d{2}:\d{2})$/i.test(rawDate))return [];
   if(timestamp<now-6*3600000||timestamp>now+8*86400000)return [];
   const impacts=currencyEffects[currency].affected;
   const iso=new Date(timestamp).toISOString();
