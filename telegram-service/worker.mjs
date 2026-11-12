@@ -534,7 +534,7 @@ export async function sendDailyNewsOverview(env,calendar,now){
  const targets=[...new Set([...(channel?[channel]:[]),...(subs.results??[]).map(r=>String(r.telegram_chat_id))])];
  let sent=0,failed=0;
  for(const chatId of targets){
-  if(!/^-?\\d{3,20}$/.test(chatId))continue;
+  if(!/^-?\d{3,20}$/.test(chatId))continue;
   const saved=await env.TRADEPULSE_DB.prepare(
    "INSERT OR IGNORE INTO news_alert_delivery(event_id,stage,recipient,sent_at) VALUES(?,?,?,?)"
   ).bind("daily:"+eatDay,"DAILY",chatId,new Date(now).toISOString()).run();
