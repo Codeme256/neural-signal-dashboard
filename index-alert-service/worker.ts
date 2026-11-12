@@ -107,6 +107,7 @@ async function publishTelegram(env: Env, a: Alert|Watch): Promise<boolean> {
       stopLoss: a.stop_loss, tp1: a.tp1, tp2: a.tp2,
       rr: a.rr, candleTime: a.candle_time,
       verifiedAt: a.verified_at, currentPrice: a.verified_quote, quoteTime: a.verified_quote_time,
+      setupScore:a.quality_score,expiresAt:a.expires_at,
     }),
   });
   if (!result.ok) return false;

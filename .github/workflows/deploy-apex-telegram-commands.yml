@@ -31,7 +31,7 @@ jobs:
       - name: Verify credentials
         run: test -n "$CLOUDFLARE_API_TOKEN"
       - name: Test Telegram bot
-        run: node --test telegram-service/worker.test.mjs
+        run: node --test telegram-service/worker.test.mjs telegram-service/signal-banners.test.mjs
       - name: Bundle only Telegram Worker
         run: npx --yes wrangler@4 deploy -c telegram-service/wrangler.jsonc --dry-run --outdir /tmp/apex-telegram-bundle
       - name: Deploy ONLY tradepulse-telegram-service
