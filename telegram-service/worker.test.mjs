@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import worker from "./worker.mjs";
+import worker,{notifyFinalOutcomes} from "./worker.mjs";
 
 const ENV={
  TRADEPULSE_DB:{prepare(){ throw Error("No database query expected in this test"); }},
@@ -139,14 +139,14 @@ test("early WATCH reaches configured channel and subscribers without an entry pr
   throw Error("Unexpected SQL "+sql);
  }}};
  try{
-  globalThis.fetch=async(_url,opts)=>{sent.push(JSON.parse(opts.body));return Response.json({ok:true,result:{message_id:1}});};
+  globalThis.fetch=async(url,opts)=>{assert.ok(String(url).includes("/sendPhoto"));const form=opts.body;assert.ok(form instanceof FormData);sent.push({text:form.get("caption"),photo:form.get("photo")});return Response.json({ok:true,result:{message_id:1}});};
   const res=await read(await worker.fetch(request("/publish",{method:"POST",headers:{Authorization:"Bearer "+ENV.TRADEPULSE_PUBLISH_SECRET,"content-type":"application/json"},body:JSON.stringify({
    type:"WATCH",id:"index:test:WATCH",symbol:"US500",strategy:"Higher-timeframe trend watch",timeframe:"M15",
    candleTime:now-30000,bias:"BULLISH",regime:"TRENDING",createdAt:now,
   })}),env));
   assert.equal(res.status,200);
   assert.equal(res.body.sent,2);
-  assert.ok(sent.every(x=>x.text.includes("NO ENTRY YET")&&!x.text.includes("SL:")));
+  assert.ok(sent.every(x=>x.text.includes("NO ENTRY YET")&&!x.text.includes("SL:")&&x.photo.type==="image/png"&&x.photo.size>3500));
  }finally{globalThis.fetch=originalFetch;}
 });
 test("old entry without new quote verification is rejected before broadcasting",async()=>{
@@ -157,4 +157,65 @@ test("old entry without new quote verification is rejected before broadcasting",
   entry:100,stopLoss:99,tp1:102,tp2:103,rr:2,candleTime:now-45*60000
  })}),env));
  assert.equal(res.status,400);
+});
+
+
+test("valid confirmed signal is sent as a real image and includes its actual price",async()=>{
+ const now=Date.now(),calls=[];
+ const env={...ENV,TRADEPULSE_DB:{prepare(sql){
+  if(sql.includes("telegram_subscriptions"))return{all:async()=>({results:[]})};
+  if(sql.includes("INSERT OR IGNORE INTO telegram_alert_delivery"))return{bind:()=>({run:async()=>({meta:{changes:1}})})};
+  throw Error("Unexpected SQL: "+sql);
+ }}};
+ const original=globalThis.fetch;
+ try{
+  globalThis.fetch=async(url,opts)=>{calls.push({url:String(url),body:opts.body});return Response.json({ok:true,result:{message_id:5}});};
+  const result=await read(await worker.fetch(request("/publish",{method:"POST",headers:{
+   Authorization:"Bearer "+ENV.TRADEPULSE_PUBLISH_SECRET,"content-type":"application/json"
+  },body:JSON.stringify({id:"new-signal-1",symbol:"US500",strategy:"Trend Pullback · Confirmed pullback",
+   direction:"BUY",timeframe:"M15",entry:6101.25,stopLoss:6091.25,tp1:6121.25,tp2:6131.25,
+   rr:2,candleTime:now-60000,verifiedAt:now-1000,currentPrice:6101.5,quoteTime:now-4000,setupScore:78,
+   expiresAt:now+120000})}),env));
+  assert.equal(result.status,200);
+  assert.equal(result.body.sent,1);
+  assert.equal(calls.length,1);
+  assert.match(calls[0].url,/sendPhoto$/);
+  assert.match(calls[0].body.get("caption"),/6101.25/);
+  assert.equal(calls[0].body.get("photo").type,"image/png");
+ }finally{globalThis.fetch=original;}
+});
+test("final win and loss outcomes each send a distinct PNG with database-backed prices",async()=>{
+ const now=Date.now(),sent=[],claimed=new Set();
+ const alerts=[
+  {alert_id:"x1",status:"WON",target:"TP2",closed_at:now-600000,
+   symbol:"US500",strategy:"Trend Pullback",direction:"BUY",timeframe:"M15",
+   entry:6000,stop_loss:5990,tp1:6020,tp2:6030,created_at:now-1500000},
+  {alert_id:"x2",status:"LOST",target:null,closed_at:now-900000,
+   symbol:"US500",strategy:"Trend Pullback",direction:"SELL",timeframe:"M15",
+   entry:6000,stop_loss:6010,tp1:5980,tp2:5970,created_at:now-1600000}
+ ];
+ const env={...ENV,TRADEPULSE_DB:{prepare(sql){
+  if(sql.startsWith("SELECT o.alert_id"))return {bind:()=>({all:async()=>({results:alerts})})};
+  if(sql.startsWith("SELECT telegram_chat_id"))return {all:async()=>({results:[]})};
+  if(sql.startsWith("INSERT OR IGNORE INTO telegram_outcome_delivery"))return {bind:(...params)=>({run:async()=>{
+   const key=params.join(":");if(claimed.has(key))return {meta:{changes:0}};
+   claimed.add(key);return {meta:{changes:1}};
+  }})};
+  if(sql.startsWith("DELETE FROM telegram_outcome_delivery"))return {bind:()=>({run:async()=>({})})};
+  throw Error("Unexpected SQL "+sql);
+ }}};
+ const original=globalThis.fetch;
+ try{
+  globalThis.fetch=async(url,opts)=>{sent.push({url:String(url),caption:opts.body.get("caption"),name:opts.body.get("photo").name});
+   return Response.json({ok:true,result:{message_id:1}});
+  };
+  await notifyFinalOutcomes(env);
+  assert.equal(sent.length,2);
+  assert.ok(sent.every(x=>x.url.endsWith("/sendPhoto")));
+  assert.ok(sent.some(x=>x.caption.includes("TP2 touched")&&x.name.includes("won")));
+  assert.ok(sent.some(x=>x.caption.includes("SL touched before TP1")&&x.name.includes("lost")));
+  assert.ok(sent.every(x=>x.caption.includes("NOT VERIFIED BROKER P/L")));
+  await notifyFinalOutcomes(env);
+  assert.equal(sent.length,2); // no repeated outcome announcements
+ }finally{globalThis.fetch=original;}
 });
