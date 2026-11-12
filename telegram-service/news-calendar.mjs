@@ -98,6 +98,58 @@ export function normalizeSecondaryCalendar(json,now=Date.now()){
   note:"Consensus values can change. Direction before release remains unknown. Exact time is scheduled, not guaranteed.",
   attribution:"Economic calendar by ShowMyTrades · "+sourceUrl};
 }
+/**
+ * Independent weekly calendar feed (Forex Factory JSON).
+ * A separate provider guards against US-only primary coverage and scheduled-only
+ * secondary feeds silently omitting GBP/EUR/JPY releases.
+ * All timestamps must carry a timezone; never guess the UTC offset.
+ */
+export const FOREX_FACTORY_WEEKLY_SOURCE="https://nfs.faireconomy.media/ff_calendar_thisweek.json";
+const FOREX_FACTORY_TIMEOUT_MS=8500;
+export function normalizeForexFactoryCalendar(json,now=Date.now()){
+ if(!Array.isArray(json))throw Error("Forex Factory weekly format unavailable");
+ const events=json.flatMap(item=>{
+  const currency=String(item?.country??"").toUpperCase().trim();
+  const name=String(item?.title??"").trim();
+  const rawDate=String(item?.date??"");
+  const timestamp=Date.parse(rawDate);
+  const impact=String(item?.impact??"").toLowerCase();
+  if(!currencyEffects[currency]||impact!=="high"||!name||!Number.isFinite(timestamp)||
+    !/(?:Z|[+-]\\d{2}:\\d{2})$/i.test(rawDate))return [];
+  if(timestamp<now-6*3600000||timestamp>now+8*86400000)return [];
+  const impacts=currencyEffects[currency].affected;
+  const iso=new Date(timestamp).toISOString();
+  return [{
+   id:"ff:"+currency+":"+name.slice(0,140)+":"+iso,event:name.slice(0,140),
+   currency,impact:"HIGH",country:currency,scheduledAt:iso,period:"",
+   previous:item.previous??null,forecast:item.forecast??null,actual:null,unit:null,
+   source:"Forex Factory",sourceUrl:"https://www.forexfactory.com/calendar",
+   affected:impacts,scenarios:currency==="USD"?ASSET_EFFECTS:Object.fromEntries(impacts.map(pair=>[
+    pair,"Market direction depends on the actual release versus consensus and subsequent reaction."
+   ])),
+   direction:"UNKNOWN — wait for confirmed released data and reaction",
+   timeframes:{preparation:"H1 / M15 before release",volatility:"M1 / M5 at release",
+    confirmation:"M15 / H1 after confirmed closes"},
+  }];
+ }).sort((a,b)=>Date.parse(a.scheduledAt)-Date.parse(b.scheduledAt));
+ return {events,source:"Forex Factory",sourceUrl:"https://www.forexfactory.com/calendar",
+  updatedAt:new Date(now).toISOString(),stale:false,coverage:"Weekly major-currency high-impact events",
+  forecastAvailable:events.some(e=>e.forecast!==null),
+  note:"Weekly calendar feed checked live. Release times and impact labels can change.",
+  attribution:"Forex Factory weekly calendar · https://www.forexfactory.com/calendar"};
+}
+function dedupeEconomicEvents(events){
+ // Prefer the more complete record for the same exact scheduled release.
+ const seen=new Map();
+ for(const event of events){
+  const name=event.event.toLowerCase().replace(/[^a-z0-9]/g,"").replace(/preliminary|prelim/g,"prelim");
+  const key=event.currency+"|"+event.scheduledAt+"|"+name;
+  const existing=seen.get(key);
+  if(!existing || (event.forecast!=null?1:0)+(event.previous!=null?1:0)>
+    (existing.forecast!=null?1:0)+(existing.previous!=null?1:0))seen.set(key,event);
+ }
+ return [...seen.values()].sort((a,b)=>Date.parse(a.scheduledAt)-Date.parse(b.scheduledAt)).slice(0,200);
+}
 async function fetchJson(url,timeoutMs){
  const controller=new AbortController();
  const timeout=setTimeout(()=>controller.abort(),timeoutMs);
@@ -108,23 +160,28 @@ async function fetchJson(url,timeoutMs){
   return await response.json();
  }finally{clearTimeout(timeout);}
 }
-export async function fetchEconomicCalendar(now=Date.now()) {
- let firstError;
- try{
-  const primary=normalizeEconomicCalendar(await fetchJson(ECONOMIC_CALENDAR_SOURCE,PRIMARY_CALENDAR_TIMEOUT_MS),now);
-  if(!primary.stale&&primary.events.length>0)return primary;
-  firstError=Error("Primary calendar stale or empty");
- }catch(e){firstError=e;}
- try{
-  const secondary=normalizeSecondaryCalendar(await fetchJson(SECONDARY_CALENDAR_SOURCE,SECONDARY_CALENDAR_TIMEOUT_MS),now);
-  if(!secondary.stale&&secondary.events.length>0)return {...secondary,fallbackUsed:true};
-  throw Error("Secondary calendar stale or empty");
- }catch(e){
-  console.error("Both news calendar providers unavailable",{
-   primary:String(firstError?.message??firstError).slice(0,120),secondary:String(e?.message??e).slice(0,120)
-  });
+export async function fetchEconomicCalendar(now=Date.now()){
+ const sources=await Promise.allSettled([
+  fetchJson(ECONOMIC_CALENDAR_SOURCE,PRIMARY_CALENDAR_TIMEOUT_MS).then(d=>normalizeEconomicCalendar(d,now)),
+  fetchJson(SECONDARY_CALENDAR_SOURCE,SECONDARY_CALENDAR_TIMEOUT_MS).then(d=>normalizeSecondaryCalendar(d,now)),
+  fetchJson(FOREX_FACTORY_WEEKLY_SOURCE,FOREX_FACTORY_TIMEOUT_MS).then(d=>normalizeForexFactoryCalendar(d,now)),
+ ]);
+ const usable=sources.flatMap(x=>x.status==="fulfilled"&&!x.value.stale&&x.value.events.length?
+  [x.value]:[]);
+ if(!usable.length){
+  console.error("All verified economic calendar sources unavailable or empty",
+    sources.map((x,i)=>({provider:["XOOMAR","ShowMyTrades","Forex Factory"][i],
+     reason:x.status==="rejected"?String(x.reason).slice(0,100):x.value.stale?"stale":"empty"})));
   throw Error("All verified economic calendar sources are unavailable");
  }
+ const events=dedupeEconomicEvents(usable.flatMap(s=>s.events));
+ const names=usable.map(s=>s.source);
+ return {...usable[0],events,source:names.join(" + "),sources:names,sourceUrl:usable[0].sourceUrl,
+  fallbackUsed:usable[0].source!=="XOOMAR",
+  coverage:"High-impact scheduled releases for major currencies from verified available sources",
+  forecastAvailable:events.some(e=>e.forecast!=null),
+  note:"Multiple calendars are merged. Providers may disagree on event priority or time; verify schedule before trading.",
+  stale:false};
 }
 export function formatEventReminder(event,minutes) {
  const stamp=new Date(event.scheduledAt);
