@@ -597,13 +597,14 @@ export default {
   }
 
   if(url.pathname==="/news/status"&&request.method==="GET"){
-    if(!hasDb(env))return respond({ready:false,error:"News notification storage unavailable"},503);
+    const publicStatus=(value,status=200)=>{const response=respond(value,status);response.headers.set("Access-Control-Allow-Origin","*");return response;};
+    if(!hasDb(env))return publicStatus({ready:false,error:"News notification storage unavailable"},503);
     try{
       const [subs,delivery]=await Promise.all([
        env.TRADEPULSE_DB.prepare("SELECT COUNT(*) AS total FROM telegram_subscriptions WHERE enabled=1").first(),
        env.TRADEPULSE_DB.prepare("SELECT COUNT(*) AS total, MAX(sent_at) AS latest FROM news_alert_delivery").first()
       ]);
-      return respond({ready:botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN),
+      return publicStatus({ready:botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN),
        cron:"*/5 * * * *",timezone:"Africa/Kampala",
        activeSubscribers:subs?.total??0,recordedReminders:delivery?.total??0,
        lastDeliveryAt:delivery?.latest??null,
@@ -611,7 +612,7 @@ export default {
        liveSource:"ShowMyTrades, Forex Factory or XOOMAR when available",
        forexComReference:"https://www.forex.com/en-uk/trading-platforms/economic-calendar/",
        note:"FOREX.com is a human-readable weekly cross-check, not an authenticated machine-readable calendar feed."});
-    }catch{return respond({ready:false,error:"News status unavailable"},503);}
+    }catch{return publicStatus({ready:false,error:"News status unavailable"},503);}
   }
   if(url.pathname==="/health"&&request.method==="GET")
     return respond({service:"tradepulse-telegram",ready:!!(hasDb(env)&&botValid(env.TRADEPULSE_TELEGRAM_BOT_TOKEN)&&env.TELEGRAM_WEBHOOK_SECRET),mode:"standalone",signalSourceConnected:!!(hasDb(env)&&env.TRADEPULSE_PUBLISH_SECRET)});
