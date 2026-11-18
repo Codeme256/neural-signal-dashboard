@@ -187,6 +187,8 @@ export function formatEventReminder(event,minutes) {
  const stamp=new Date(event.scheduledAt);
  const eat=new Intl.DateTimeFormat("en-GB",{timeZone:"Africa/Kampala",dateStyle:"medium",timeStyle:"short"}).format(stamp);
  const lines=event.affected.slice(0,7);
+ const scenarioPairs=[...new Set(["XAUUSD",...lines])].filter(pair=>event.scenarios?.[pair]).slice(0,4);
+ const scenarios=scenarioPairs.map(pair=>"• "+pair+": "+event.scenarios[pair]);
  return "📰 APEX PRE-NEWS ALERT · "+event.impact+
   "\n"+event.event+" ("+event.currency+")"+
   "\nRelease: "+eat+" EAT / "+stamp.toISOString().slice(11,16)+" UTC"+
@@ -194,7 +196,8 @@ export function formatEventReminder(event,minutes) {
   "\nWatchlist: "+lines.join(", ")+
   "\nCurrency: "+event.currency+" · Forecast: "+(event.forecast??"not available")+" · Previous: "+(event.previous??"not available")+
   "\nDirection: UNKNOWN until the actual figures and market response; pairs can react differently."+
-  "\nChart windows: H1/M15 context before news; M1/M5 initial volatility; M15 close for confirmation."+
+  (scenarios.length?"\nConditional first reaction:\n"+scenarios.join("\n"):"")+
+  "\nAfter release: compare the first completed M5 move with the M15 close. If direction flips, mark reversal; if the move fades, wait." +
   "\n⚠️ No confirmed direction before actual data. Avoid entering during spreads/slippage spikes."+
   "\nData: "+event.source+" · "+event.sourceUrl;
 }

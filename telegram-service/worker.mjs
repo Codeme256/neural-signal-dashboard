@@ -53,7 +53,7 @@ async function requestBody(request) {
 }
 const COMMANDS = [
  ["start","Start APEX bot and subscribe to alerts"],["help","Commands and usage"],["menu","Open interactive signal menu"],
- ["status","View bot and signal-source status"],["signal","Latest confirmed index signal"],["analyze","Analyze last confirmed index setup"],
+ ["status","View bot and signal-source status"],["signal","Latest confirmed market signal"],["analyze","Analyze last confirmed market setup"],
  ["price","Fetch a Deriv market price"],["watchlist","View monitored instruments"],["news","Economic news availability"],
  ["mode","View signal-only mode"],["account","Broker account availability"],["positions","Broker positions availability"],
  ["close","Broker order closure availability"],["risk","Signal risk safeguards"],["performance","Signal statistics"],
@@ -254,7 +254,7 @@ async function commandReply(env,chatId,id,cmd,args) {
   return sendText(env,chatId,(cmd==="history"?"Recent Index Signals\n\n":"Latest Index Signal\n\n")+rows.map(alertDescription).join("\n\n"));
  }
  if(cmd==="watchlist")return sendText(env,chatId,
-  "Scheduled index scanner: open Deriv stock indices, M15 with higher-timeframe context.\nOn-demand prices: EURUSD, GBPUSD, USDJPY, GBPJPY, XAUUSD, BTCUSD.\nUse /price EURUSD.\nPrice symbols are not guaranteed to be open or available.");
+  "Scheduled M15 scanner: BTCUSD, XAUUSD, open stock indices and rotating Deriv dashboard markets.\nOn-demand prices: EURUSD, GBPUSD, USDJPY, GBPJPY, XAUUSD, BTCUSD.\nUse /price EURUSD.\nPrice symbols are not guaranteed to be open or available.");
  if(cmd==="price") {
   const symbol=(args[0]||"EURUSD").toUpperCase().replace("/","");
   const underlying=PRICE_SYMBOLS[symbol];
@@ -312,7 +312,7 @@ async function callbackMessage(callback,env) {
 // Broker-specific OTC index levels must not be represented as verified
 // exchange-market signals. Fail closed for unpriced, stale or OTC alerts.
 function unsupportedOtcMarket(...values){
- return values.some(v=>typeof v==="string"&&/(?:^|[^A-Z])OTC(?:[_-]|\\b)/i.test(v));
+ return values.some(v=>typeof v==="string"&&/(?:^|[^A-Z])OTC(?:[_-]|\b)/i.test(v));
 }
 function watchFrom(value){
  if(!value||typeof value!=="object"||Array.isArray(value)||value.type!=="WATCH")return null;

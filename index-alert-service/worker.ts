@@ -1,14 +1,28 @@
 /**
- * Standalone Cloudflare Worker: scheduled Deriv stock-index signal generation.
+ * Standalone Cloudflare Worker: scheduled Deriv market signal generation.
  * Additive D1 storage and trusted Telegram publishing. No trade execution.
  * Deploy independently of the existing website and Telegram Workers.
  */
 import { parseDerivMarkets, parseDerivOhlc } from "../src/lib/deriv-data";
+import { analyze } from "../src/lib/signal-engine";
+import { analyzeBtc, isBitcoinMarket } from "../src/lib/btc-signal-engine";
 import { analyzeIndex } from "../src/lib/index-signal-engine";
-import { TF_SECONDS, HIGHER_TF, type Timeframe } from "../src/lib/strategies/types";
+import { TF_SECONDS, HIGHER_TF, type Timeframe, type Ohlc } from "../src/lib/strategies/types";
 import { evaluateOutcome } from "../src/lib/signal-tracker";
 import { validateFreshEntry } from "./entry-freshness";
 import { assessPullback, pullbackZone, type PullbackPlan } from "./pullback-policy";
+
+type Market = ReturnType<typeof parseDerivMarkets>[number];
+function marketsForScan(markets: Market[], scheduledTime: number) {
+  const open = markets.filter(m => m.open && !/OTC(?:[_-]|\b)/i.test(m.derivSymbol + " " + m.symbol));
+  const priority = open.filter(m => m.category === "INDEX" || m.symbol === "XAUUSD" || isBitcoinMarket(m.derivSymbol, m.category));
+  const rotation = open.filter(m => !priority.includes(m)).sort((a, b) => a.derivSymbol.localeCompare(b.derivSymbol));
+  const offset = Math.floor(scheduledTime / 300_000) * ROTATING_MARKETS;
+  const batch = Array.from({ length: Math.min(rotation.length, ROTATING_MARKETS) }, (_, i) =>
+    rotation[(offset + i) % rotation.length]!,
+  );
+  return [...priority.filter(m => m.category !== "INDEX"), ...priority.filter(m => m.category === "INDEX").slice(0, MAX_MARKETS), ...batch];
+}
 
 type ScheduledController = { scheduledTime: number };
 type ExecutionContext = { waitUntil(promise: Promise<unknown>): void };
@@ -37,7 +51,7 @@ type Alert = {
 };
 const PUBLIC_WS = "https://api.derivws.com/trading/v1/options/ws/public";
 const MAX_MARKETS = 12;
-const MAX_WATCHES_PER_SCAN=3;
+const ROTATING_MARKETS = 6;
 const MIN_QUALITY = 70;
 const TF: Timeframe = "M15";
 const HIGHER = HIGHER_TF[TF];
@@ -215,7 +229,7 @@ async function retryPending(env: Env) {
 /** The only path from PENDING plan to confirmed BUY/SELL notification. */
 async function monitorPullbacks(env:Env) {
  const pending=await env.TRADEPULSE_DB.prepare(
-  "SELECT * FROM index_pullback_plans WHERE status='PENDING' ORDER BY created_at ASC LIMIT 8"
+  "SELECT * FROM index_pullback_plans WHERE status='PENDING' ORDER BY created_at ASC LIMIT 24"
  ).all<PullbackPlan>();
  if(!(pending.results??[]).length)return;
  const ws=await connect(),request=makeRequester(ws);
@@ -263,33 +277,39 @@ async function monitorPullbacks(env:Env) {
  }finally{try{ws.close(1000,"Pullback scan complete");}catch{}}
 }
 
-async function scheduledScan(env: Env) {
+async function scheduledScan(env: Env, scheduledTime: number) {
   if (!env.TRADEPULSE_DB) throw Error("Required index alert database binding is missing");
   const ws = await connect();
   let scanned=0,stored=0,deliveryFailures=0,watchSent=0,staleSuppressed=0;
   const request=makeRequester(ws);
   try {
     const active=await request({active_symbols:"brief"});
-    const markets=parseDerivMarkets(active.active_symbols)
-      .filter(m=>m.category==="INDEX"&&m.open&&!/^OTC[_-]/i.test(m.derivSymbol)&&
-        !/\\bOTC\\b/i.test(m.symbol))
-      .slice(0,MAX_MARKETS);
-    // Empty is intentional: never fabricate an exchange-backed setup from OTC feeds.
+    const markets = marketsForScan(parseDerivMarkets(active.active_symbols), scheduledTime);
+    const history = async (symbol: string, timeframe: Timeframe): Promise<Ohlc[]> => {
+      const data = await request({ ticks_history: symbol, count: 300, end: "latest",
+        style: "candles", granularity: TF_SECONDS[timeframe] });
+      return parseDerivOhlc(data.candles);
+    };
     for (const m of markets) {
       try {
-        const raw = await request({
-          ticks_history:m.derivSymbol, count:300, end:"latest", style:"candles", granularity:TF_SECONDS[TF]
-        });
-        const higherRaw = await request({
-          ticks_history:m.derivSymbol, count:300, end:"latest", style:"candles", granularity:TF_SECONDS[HIGHER]
-        });
-        const candles=parseDerivOhlc(raw.candles);
-        const higher=parseDerivOhlc(higherRaw.candles);
-        const now=Date.now();
-        const result=analyzeIndex({
-          candles,higher,timeframe:TF,open:true,decimals:m.decimals,
-          strategy:"all",enabled:["trend"],now,
-        });
+        const [candles, higher] = await Promise.all([
+          history(m.derivSymbol, TF),
+          history(m.derivSymbol, HIGHER as Timeframe),
+        ]);
+        const now = Date.now();
+        const input = { candles, higher, timeframe: TF, open: true, decimals: m.decimals, now, minRR: 2 };
+        let result;
+        if (isBitcoinMarket(m.derivSymbol, m.category)) {
+          result = analyzeBtc(input);
+        } else if (m.category === "INDEX") {
+          result = analyzeIndex({ ...input, strategy: "all", enabled: ["trend"] });
+        } else {
+          result = analyze(input);
+          if (result.entry !== null) {
+            const confirm = await history(m.derivSymbol, "M5");
+            result = analyze({ ...input, confirm, now: Date.now() });
+          }
+        }
         scanned++;
         // Never publish a WATCH without market-verified entry levels.
         // OTC symbols are broker-specific prices, not verified exchange index feeds.
@@ -341,7 +361,7 @@ async function scheduledScan(env: Env) {
           timeframe:TF,candleTime:a.candle_time,bias:a.direction==="BUY"?"BULLISH":"BEARISH",
           regime:"TRENDING",createdAt:now,entryZoneLow:Number(zone.low.toFixed(m.decimals)),
           entryZoneHigh:Number(zone.high.toFixed(m.decimals)),expiresAt:a.expires_at,
-          verifiedPrice:watchQuote,quoteTime:watchQuoteTime,dataSource:"Deriv broker index feed"};
+          verifiedPrice:watchQuote,quoteTime:watchQuoteTime,dataSource:"Deriv public market feed"};
         try{if(await publishTelegram(env,watch))watchSent++;}
         catch{deliveryFailures++;}
         // Only monitorPullbacks() can issue confirmed entries after a fresh M1 retest.
@@ -360,7 +380,7 @@ async function scheduledScan(env: Env) {
 
 export default {
   async scheduled(_event: ScheduledController,env: Env,ctx: ExecutionContext) {
-    ctx.waitUntil(scheduledScan(env));
+    ctx.waitUntil(scheduledScan(env, _event.scheduledTime));
     ctx.waitUntil(followUpIssuedAlerts(env).catch(e=>console.warn("Scheduled index follow-up unavailable",e instanceof Error?e.message:"Unknown")));
   },
   async fetch(request: Request,env: Env) {
@@ -368,6 +388,7 @@ export default {
     if(url.pathname==="/health") return response({
       service:"tradepulse-index-alert-service",
       scheduled:true,source:"Deriv public market data",
+      scope:"Open stock indices, BTCUSD and XAUUSD every run, with rotating dashboard markets",
       telegramPublisherConfigured:!!(env.TELEGRAM_PUBLISH_URL&&env.TRADEPULSE_PUBLISH_SECRET),
       dbConfigured:!!env.TRADEPULSE_DB,
     });

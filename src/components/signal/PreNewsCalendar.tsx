@@ -3,7 +3,7 @@ import { NewsSignalCard } from "./NewsSignalCard";
 import { AlertTriangle, BellRing, CalendarClock, RefreshCw, Search } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { useDerivMarkets } from "@/hooks/use-deriv";
-import { fetchCandles } from "@/lib/candle-store";
+import { fetchCandles, fetchCandlesRange } from "@/lib/candle-store";
 import { deriveSignal } from "@/lib/deriv-data";
 
 type Event = {
@@ -13,6 +13,11 @@ type Event = {
   affected:string[];scenarios:Record<string,string>;
   direction:string;timeframes:{preparation:string;volatility:string;confirmation:string};
 };
+type Reaction = { initial: number | null; followThrough: number | null };
+const FIVE_MINUTES = 300_000;
+const moveLabel = (move: number | null) => move === null ? "Awaiting completed candles" :
+  `${move > 0 ? "Up" : move < 0 ? "Down" : "Flat"} · ${Math.abs(move).toFixed(3)}%`;
+
 type NewsScan = { eventId:string;symbol:string;checkedAt:number;technicalBias:string;ema9:number|null;ema21:number|null;rsi:number|null;note:string;dataTime:number|null;minutesToRelease:number;fresh:boolean;marketOpen:boolean; };
 type Calendar = {events:Event[];stale:boolean;updatedAt:string|null;source:string;
   coverage:string;forecastAvailable:boolean;note:string;attribution:string;sourceUrl:string};
@@ -35,6 +40,7 @@ function isEvent(x:unknown):x is Event {
    Number.isFinite(Date.parse(e["scheduledAt"]))&&typeof e["scenarios"]==="object"&&e["scenarios"]!==null&&Array.isArray(e["affected"]);
 }
 export function PreNewsCalendar(){
+ const [reaction, setReaction] = useState<Reaction | null>(null);
  const [calendar,setCalendar]=useState<Calendar|null>(null);
  const [error,setError]=useState("");
  const [loading,setLoading]=useState(true);
@@ -88,7 +94,7 @@ export function PreNewsCalendar(){
   void check();const poll=setInterval(()=>void check(),300000);
   return ()=>{active=false;clearInterval(poll);};
  },[]);
- const upcoming=(calendar?.events??[]).filter(e=>Date.parse(e["scheduledAt"])>now-15*60000).slice(0,20);
+ const upcoming=(calendar?.events??[]).filter(e=>Date.parse(e["scheduledAt"])>now-3*60*60000).slice(0,20);
  const chosenEvent=upcoming.find(e=>e.id===eventId)??upcoming[0]??null;
  const market=marketsQ.data?.find(m=>m.symbol===selected && ["FOREX","METAL","INDEX"].includes(m.category));
  const related=!!chosenEvent?.affected.includes(selected);
@@ -100,7 +106,7 @@ export function PreNewsCalendar(){
   setAutoStage(auto?stage:null);
   setScannedEvent(targetEvent);
   setResultsOpen(true);
-  setScanError("");setScanResult(null);
+  setScanError("");setScanResult(null);setReaction(null);
   if(!targetEvent){setScanError("Select an upcoming verified release first.");return;}
   if(calendar?.stale){setScanError("Economic calendar is stale. Refresh the feed before scanning.");return;}
   if(!targetMarket){setScanError("This instrument is not currently available from the Deriv market feed. Its technical bias cannot be verified.");return;}
@@ -108,6 +114,22 @@ export function PreNewsCalendar(){
   scanInFlight.current=true;
   setScanning(true);
   try{
+   const release = Date.parse(targetEvent.scheduledAt);
+   const checkedAt = Date.now();
+   if (release <= checkedAt) {
+    const start = Math.ceil(release / FIVE_MINUTES) * FIVE_MINUTES;
+    const reference = Math.floor(release / FIVE_MINUTES) * FIVE_MINUTES - FIVE_MINUTES;
+    const bars = await fetchCandlesRange(targetMarket.derivSymbol, "M5", reference, Math.min(checkedAt, start + 3 * FIVE_MINUTES));
+    const closed = new Map(bars.filter(bar => bar.time + FIVE_MINUTES <= checkedAt).map(bar => [bar.time, bar.close]));
+    const baseline = closed.get(reference);
+    const first = closed.get(start);
+    const last = closed.get(start + 2 * FIVE_MINUTES);
+    const percent = (price: number, from: number) => (price / from - 1) * 100;
+    setReaction({
+     initial: baseline && first ? percent(first, baseline) : null,
+     followThrough: baseline && first && closed.has(start + FIVE_MINUTES) && last ? percent(last, baseline) : null,
+    });
+   }
    const candles=await fetchCandles(targetMarket.derivSymbol,"H1");
    const snapshot=Date.now();
    const technical=deriveSignal(candles.map(c=>({time:c.time,value:c.close})),snapshot,targetMarket.open);
@@ -227,7 +249,7 @@ export function PreNewsCalendar(){
   </div>
   <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
    <div className="space-y-3">
-    <h3 className="font-semibold">Upcoming high-impact releases</h3>
+    <h3 className="font-semibold">Upcoming and recent high-impact releases</h3>
     {loading&&!calendar&&<p className="text-sm text-muted-foreground">Loading verified releases…</p>}
     {!loading&&!error&&!upcoming.length&&<p className="text-sm text-muted-foreground">No upcoming verified events were returned for the covered period. This is not a complete global calendar.</p>}
     {upcoming.map(e=>{
@@ -253,7 +275,7 @@ export function PreNewsCalendar(){
       className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-500 px-5 py-4 text-base font-bold tracking-wide text-slate-950 shadow-lg shadow-cyan-500/20 transition hover:bg-cyan-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-cyan-300 disabled:cursor-not-allowed disabled:opacity-50">
       <Search className="h-5 w-5" />{scanning?"SCANNING NEWS…":"SCAN NEWS NOW — "+selected}
     </button>
-    <p className="text-xs text-muted-foreground">Scans the next selected high-impact release and confirmed Deriv H1 candles. Pair impact may be indirect; news direction cannot be predicted.</p>
+    <p className="text-xs text-muted-foreground">Before release, use the H1 bias and conditional pair scenarios. After release, scan the event to compare the first M5 close with the move after three completed M5 bars.</p>
     <div className="rounded-xl border border-primary/30 bg-card/80 p-4">
      <h4 className="flex items-center gap-2 font-semibold"><Search className="h-4 w-4 text-primary"/> Scan news impact</h4>
      <label htmlFor="pre-news-event" className="mt-3 block text-xs text-muted-foreground">Select a news release</label>
@@ -290,6 +312,11 @@ export function PreNewsCalendar(){
     <DialogDescription>Live pre-release watch and historical H1 technical conditions. Not a confirmed news prediction.</DialogDescription>
     <NewsSignalCard event={scannedEvent} symbol={scanResult?.symbol??selected} scan={scanResult}
       busy={scanning} error={scanError} automatic={autoStage!==null} stage={autoStage}/>
+     {reaction && <div className="space-y-1 rounded-lg border border-border p-3 text-sm">
+      <p>First completed M5 · {moveLabel(reaction.initial)}</p>
+      <p>15-minute follow-through · {moveLabel(reaction.followThrough)}</p>
+      <p className="text-xs text-muted-foreground">Both moves use the last pre-release close as the baseline.</p>
+     </div>}
     <button type="button" className="w-full rounded-xl bg-primary px-4 py-3 font-bold text-primary-foreground" onClick={()=>setResultsOpen(false)}>CLOSE ANALYSIS</button>
    </DialogContent>
   </Dialog>
