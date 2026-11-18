@@ -5,6 +5,7 @@ export type NewsCardEvent = {
  affected:string[];scenarios:Record<string,string>;source:string;
 };
 export type NewsCardScan = {
+ quoteSummary:string;moveM5:number|null;moveM15:number|null;rangeM15:string|null;
  symbol:string;technicalBias:string;ema9:number|null;ema21:number|null;rsi:number|null;
  checkedAt:number;dataTime:number|null;note:string;minutesToRelease:number;
 };
@@ -36,18 +37,22 @@ export function NewsSignalCard({event,symbol,scan,busy,error,automatic,stage}:{
       </div>
      </div>
      <div className="rounded-lg border border-border/60 bg-background/70 px-3 py-2 text-right">
-      <p className="text-[10px] font-bold uppercase text-muted-foreground">News direction probability</p>
-      <p className="text-lg font-black">Not established</p>
-      <p className="max-w-[12rem] text-[10px] text-muted-foreground">No validated probability model</p>
+      <p className="text-[10px] font-bold uppercase text-muted-foreground">Deriv quote at scan</p>
+      <p className="mt-1 font-bold">{scan?.quoteSummary ?? "Awaiting scan"}</p>
      </div>
     </div>
-    <p className="mt-3 text-xs text-muted-foreground">Existing H1 technical conditions only — not a confirmed news BUY/SELL prediction.</p>
+    <p className="mt-3 text-xs text-muted-foreground">H1 shows the technical bias. Completed M5 candles show the latest observed movement.</p>
    </div>
+   {scan && <div className="grid grid-cols-2 gap-2 px-4 pt-4 text-xs">
+    <p><strong>Last 5 minutes</strong><br />{scan.moveM5 === null ? "Unavailable" : `${scan.moveM5 >= 0 ? "+" : ""}${scan.moveM5.toFixed(3)}%`}</p>
+    <p><strong>Last 15 minutes</strong><br />{scan.moveM15 === null ? "Unavailable" : `${scan.moveM15 >= 0 ? "+" : ""}${scan.moveM15.toFixed(3)}%`}</p>
+    <p className="col-span-2"><strong>15-minute low to high</strong> · {scan.rangeM15 ?? "Unavailable"}</p>
+   </div>}
    <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-4">
     <div className="rounded-lg bg-muted/50 p-3"><p className="text-[10px] uppercase text-muted-foreground">Bias</p><p className={"mt-1 font-bold "+tone}>{directional?bias:"WAIT"}</p></div>
     <div className="rounded-lg bg-muted/50 p-3"><p className="text-[10px] uppercase text-muted-foreground">Volatility</p><p className="mt-1 font-bold text-amber-600 dark:text-amber-300">POTENTIALLY HIGH</p></div>
     <div className="rounded-lg bg-muted/50 p-3"><p className="text-[10px] uppercase text-muted-foreground">News risk</p><p className="mt-1 font-bold">{extraRisk?"VERY HIGH":"ELEVATED"}</p></div>
-    <div className="rounded-lg bg-muted/50 p-3"><p className="text-[10px] uppercase text-muted-foreground">Expected move</p><p className="mt-1 font-bold">Not estimated</p></div>
+    <div className="rounded-lg bg-muted/50 p-3"><p className="text-[10px] uppercase text-muted-foreground">News entry</p><p className="mt-1 font-bold">Wait for confirmation</p></div>
    </div>
   </div>
   <section className="rounded-xl border border-border bg-card p-4">

@@ -7,8 +7,8 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { DerivMarket } from "@/lib/deriv-data";
-import { formatMarketPrice } from "@/lib/deriv-data";
-import { analyze } from "@/lib/signal-engine";
+import { formatMarketPrice, derivQuoteStatus, type DerivQuote } from "@/lib/deriv-data";
+import { analyze, closedCandles, isStale } from "@/lib/signal-engine";
 import { analyzeIndex, INDEX_STRATEGIES, INDEX_DEFAULT_ENABLED, type IndexStrategyId, type IndexStrategySelection } from "@/lib/index-signal-engine";
 import { analyzeBtc, isBitcoinMarket, BTC_STRATEGIES, BTC_DEFAULT_ENABLED, type BtcStrategyId, type BtcStrategySelection } from "@/lib/btc-signal-engine";
 import { storeScanSession } from "@/lib/index-scan-history";
@@ -18,7 +18,7 @@ import { CONFIRM_TF, HIGHER_TF, STRATEGIES, TIMEFRAMES, type Analysis, type Stra
 import { NeuralCanvas } from "./NeuralCanvas";
 import { NeuralScan } from "./NeuralScan";
 
-type Result = { market: DerivMarket; analysis: Analysis | null; error?: string };
+type Result = { market: DerivMarket; analysis: Analysis | null; move?: number; error?: string };
 const MIN_STRENGTH = 70;
 /** Pairs analysed at once; the Deriv client additionally caps simultaneous requests. */
 const BATCH = 3;
@@ -58,10 +58,14 @@ async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: Stra
     const confirm = await fetchCandles(m.derivSymbol, CONFIRM_TF[tf], signal).catch((e) => { if (isAbortError(e)) throw e; return null; });
     analysis = analyze({ ...input, confirm, now: Date.now() });
   }
-  return { market: m, analysis };
+  const now = Date.now();
+  const closed = closedCandles(candles, tf, now);
+  const latest = closed.at(-1);
+  return latest && !isStale(closed, tf, now) && m.open ?
+    { market: m, analysis, move: (latest.close / latest.open - 1) * 100 } : { market: m, analysis };
 }
 
-export function ScanDialog({ open, markets, prices: _prices, onClose, label = "all open markets", section = "all", single = false }: { section?: string; open: boolean; markets: DerivMarket[]; prices: Map<string, number>; onClose: () => void; label?: string; single?: boolean | undefined }) {
+export function ScanDialog({ open, markets, quotes, onClose, label = "all open markets", section = "all", single = false }: { section?: string; open: boolean; markets: DerivMarket[]; quotes: Map<string, DerivQuote>; onClose: () => void; label?: string; single?: boolean | undefined }) {
   const trackedSignals = useSyncExternalStore(trackerStore.subscribe, trackerStore.get, trackerStore.getServer);
   const reviews = pairStrategyReviews(trackedSignals);
   const [progress, setProgress] = useState(0);
@@ -128,7 +132,15 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
   const strongAll = ranked.filter((r) => r.analysis!.action === "BUY" || r.analysis!.action === "SELL");
   const avoided = strongAll.filter(r=>verdictFor(reviews,r.market.symbol,r.analysis!.strategy)?.verdict==="AVOID");
   const strong = strongAll.filter(r=>verdictFor(reviews,r.market.symbol,r.analysis!.strategy)?.verdict!=="AVOID");
-  const watch = ranked.filter((r) => r.analysis!.action === "WAIT");
+  const isFxOrMetal = (r: Result) => ["FOREX", "METAL"].includes(r.market.category);
+  const watch = ranked.filter(r => r.analysis!.action === "WAIT" ||
+    (isFxOrMetal(r) && r.analysis!.action === "NO TRADE" && r.analysis!.score >= 40 && r.analysis!.score < MIN_STRENGTH));
+  const quoteSummary = ({ market, move }: Result) => {
+    const quote = quotes.get(market.symbol);
+    const status = derivQuoteStatus(quote, Date.now());
+    const price = quote ? `${formatMarketPrice(quote.price, market)} · ${status} · ${new Date(quote.epoch).toLocaleTimeString()}` : status;
+    return move === undefined ? price : `${price} · Last closed ${tf} ${move >= 0 ? "+" : ""}${move.toFixed(3)}%`;
+  };
   const unavailable = results.filter((r) => r.error);
   const noTrade = results.filter((r) => r.analysis?.action === "NO TRADE");
   const closed = results.filter(r => !r.market.open);
@@ -230,7 +242,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
                 <strong>HISTORICALLY WEAK PAIR / STRATEGY — NEW SIGNAL AVOIDED</strong>
                 <p className="mt-2">{verdictFor(reviews,one.market.symbol,one.analysis.strategy)?.message}</p>
                </div>}
-              <SignalCard market={one.market} analysis={one.analysis} detailed blocked={verdictFor(reviews,one.market.symbol,one.analysis.strategy)?.verdict==="AVOID"}/>
+              <SignalCard quote={quoteSummary(one)} market={one.market} analysis={one.analysis} detailed blocked={verdictFor(reviews,one.market.symbol,one.analysis.strategy)?.verdict==="AVOID"}/>
             </div> : <p className="py-8 text-center text-muted-foreground">{one?.error ?? "No data for this market."}</p>
           )}
 
@@ -250,7 +262,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
               )}
               {strong.length === 0 && !onlyIndex && <p className="py-6 text-center text-muted-foreground">No strong signals on {tf} right now. The engine only signals confirmed setups — try another timeframe or scan again later.</p>}
               {strong.length === 0 && onlyIndex && markets.some(m=>m.open) && <p className="py-2 text-center text-muted-foreground">No fully confirmed index signals on {tf}. See NO TRADE / WAIT results below for the specific reason.</p>}
-              {strong.map((r) => <SignalCard key={r.market.derivSymbol} market={r.market} analysis={r.analysis!} />)}
+              {strong.map((r) => <SignalCard key={r.market.derivSymbol} market={r.market} quote={quoteSummary(r)} analysis={r.analysis!} />)}
               {onlyIndex && [...noTrade,...results.filter(r=>r.analysis?.action==="WAIT")].map(r=>(
                 <div key={r.market.derivSymbol} className="rounded-lg border border-border bg-background/40 p-3 font-mono text-xs">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -268,13 +280,13 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
               ))}
               {watch.length > 0 && (
                 <div className="pt-2">
-                  <div className="mb-2 font-mono text-[10px] tracking-widest text-muted-foreground">WATCHLIST · CONFLUENCE 50–69</div>
+                  <div className="mb-2 font-mono text-[10px] tracking-widest text-muted-foreground">WATCHLIST · FOREX/METALS FROM 40/100</div>
                   <div className="space-y-1.5">
                     {watch.map((r) => (
                       <div key={r.market.derivSymbol} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background/40 px-3 py-2 font-mono text-xs">
                         <span className="font-display text-sm font-bold">{r.market.symbol}</span>
-                        <span className="truncate text-muted-foreground">{r.analysis!.strategy}</span>
-                        <span className="text-warn">{r.analysis!.score}</span>
+                        <span className="text-muted-foreground">{r.analysis!.strategy} · {quoteSummary(r)}</span>
+                        <span className="text-warn">{r.analysis!.score}/100</span>
                       </div>
                     ))}
                   </div>
@@ -299,7 +311,7 @@ function timeAgo(t: number) {
   return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
 }
 
-function SignalCard({ market, analysis: a, detailed = false, blocked = false }: { market: DerivMarket; analysis: Analysis; detailed?: boolean; blocked?: boolean }) {
+function SignalCard({ market, quote, analysis: a, detailed = false, blocked = false }: { market: DerivMarket; quote: string; analysis: Analysis; detailed?: boolean; blocked?: boolean }) {
   const fmt = (v: number | null) => formatMarketPrice(v, market);
   const hasLevels = a.entry !== null;
   const tone = a.score >= 70 ? "text-bull" : a.score >= 50 ? "text-warn" : "text-muted-foreground";

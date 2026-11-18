@@ -64,7 +64,6 @@ function Dashboard() {
   const [scan, setScan] = useState<ScanTarget | null>(null);
   const scanMarkets = useMemo(() => (scan ? markets.filter(scan.filter) : []), [scan, markets]);
   const btc = markets.find((m) => m.symbol === "BTCUSD");
-  const prices = useMemo(() => new Map((quotesQ.data ?? []).map((q) => [q.symbol, q.price])), [quotesQ.data]);
   const now = Date.now();
 
   const list = markets.filter(
@@ -199,7 +198,7 @@ function Dashboard() {
         </section>
       </main>
 
-      <ScanDialog key={scan?.label} section={scan?.section ?? "all"} single={scan?.single} open={!!scan} label={scan?.label ?? "markets"} markets={scanMarkets} prices={prices} onClose={() => setScan(null)} />
+      <ScanDialog key={scan?.label} section={scan?.section ?? "all"} single={scan?.single} open={!!scan} label={scan?.label ?? "markets"} markets={scanMarkets} quotes={quotes} onClose={() => setScan(null)} />
     </div>
   );
 }

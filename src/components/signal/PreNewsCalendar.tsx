@@ -5,7 +5,9 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { useDerivMarkets } from "@/hooks/use-deriv";
 import { fetchCandles, fetchCandlesRange } from "@/lib/candle-store";
 import { phoneNewsPushEnabled, setPhoneNewsPush, supportsNewsPush } from "@/lib/news-push-client";
-import { deriveSignal } from "@/lib/deriv-data";
+import { deriveSignal, derivQuoteStatus, formatMarketPrice, parseDerivQuote } from "@/lib/deriv-data";
+
+import { derivRequest } from "@/lib/deriv-client";
 
 type Event = {
   id:string;event:string;currency:string;impact:string;country:string;
@@ -19,7 +21,7 @@ const FIVE_MINUTES = 300_000;
 const moveLabel = (move: number | null) => move === null ? "Awaiting completed candles" :
   `${move > 0 ? "Up" : move < 0 ? "Down" : "Flat"} · ${Math.abs(move).toFixed(3)}%`;
 
-type NewsScan = { eventId:string;symbol:string;checkedAt:number;technicalBias:string;ema9:number|null;ema21:number|null;rsi:number|null;note:string;dataTime:number|null;minutesToRelease:number;fresh:boolean;marketOpen:boolean; };
+type NewsScan = { quoteSummary: string; moveM5: number | null; moveM15: number | null; rangeM15: string | null; eventId:string;symbol:string;checkedAt:number;technicalBias:string;ema9:number|null;ema21:number|null;rsi:number|null;note:string;dataTime:number|null;minutesToRelease:number;fresh:boolean;marketOpen:boolean; };
 type Calendar = {events:Event[];stale:boolean;updatedAt:string|null;source:string;
   coverage:string;forecastAvailable:boolean;note:string;attribution:string;sourceUrl:string};
 const NEWS_URL = "https://tradepulse-telegram-service.davidmwesigwa71.workers.dev/news/calendar";
@@ -134,14 +136,28 @@ export function PreNewsCalendar(){
      followThrough: baseline && first && closed.has(start + FIVE_MINUTES) && last ? percent(last, baseline) : null,
     });
    }
-   const candles=await fetchCandles(targetMarket.derivSymbol,"H1");
+   const [candles, recent, tick] = await Promise.all([
+    fetchCandles(targetMarket.derivSymbol, "H1").catch(() => []),
+    fetchCandles(targetMarket.derivSymbol, "M5").catch(() => []),
+    derivRequest({ticks_history:targetMarket.derivSymbol,count:2,end:"latest",style:"ticks"})
+      .then(result => parseDerivQuote(targetMarket, result.history, Date.now())).catch(() => undefined),
+   ]);
    const snapshot=Date.now();
    const technical=deriveSignal(candles.map(c=>({time:c.time,value:c.close})),snapshot,targetMarket.open);
-   if(!technical.actionable || technical.time===null){
-    setScanError("Insufficient or stale completed H1 candles. No verified technical bias is available.");
-    return;
-   }
-   setScanResult({eventId:targetEvent.id,symbol:targetSymbol,checkedAt:snapshot,technicalBias:technical.direction,
+   const last = recent.filter(bar => bar.time + FIVE_MINUTES <= snapshot).slice(-4);
+   const end = last.at(-1);
+   const prior = last.at(-2);
+   const first = last[0];
+   const current = end && snapshot - end.time - FIVE_MINUTES < 2 * FIVE_MINUTES;
+   const contiguous = current && last.length === 4 && last.every((bar, i) => bar.time === first!.time + i * FIVE_MINUTES);
+   const range = last.slice(-3);
+   const fmt = (price: number) => formatMarketPrice(price, targetMarket);
+   const quoteSummary = tick ? `${fmt(tick.price)} · ${derivQuoteStatus(tick, snapshot)} · ${eat.format(new Date(tick.epoch))} EAT` : "Unavailable";
+   setScanResult({quoteSummary,
+    moveM5: current && prior && end.time-prior.time===FIVE_MINUTES ? (end.close/prior.close-1)*100 : null,
+    moveM15: contiguous ? (end.close/first!.close-1)*100 : null,
+    rangeM15: contiguous ? `${fmt(Math.min(...range.map(b=>b.low)))} to ${fmt(Math.max(...range.map(b=>b.high)))}` : null,
+    eventId:targetEvent.id,symbol:targetSymbol,checkedAt:snapshot,technicalBias:technical.direction,
     ema9:technical.ema9,ema21:technical.ema21,rsi:technical.rsi,note:technical.note,
     dataTime:technical.time,minutesToRelease:Math.round((Date.parse(targetEvent.scheduledAt)-snapshot)/60000),
     fresh:technical.actionable,marketOpen:targetMarket.open});
