@@ -6,6 +6,7 @@ import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { ScanDialog } from "@/components/signal/SignalDialog";
 import { UserMenu } from "@/components/auth/UserMenu";
 import { IndexNotificationCenter } from "@/components/signal/IndexNotificationCenter";
+import { CurrencyStrengthRanking } from "@/components/signal/CurrencyStrengthRanking";
 
 export const Route = createFileRoute("/_authenticated/")({
   head: () => ({
@@ -87,6 +88,8 @@ function Dashboard() {
             ₿ SCAN BTCUSD {btc ? `· ${formatMarketPrice(quotes.get("BTCUSD")?.price, btc)}` : ""}
           </button>
         </section>
+
+        <CurrencyStrengthRanking />
 
         <section className="mt-10 grid grid-cols-2 gap-4 lg:grid-cols-5">
           {groups.map((g) => {
