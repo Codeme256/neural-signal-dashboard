@@ -1,0 +1,27 @@
+name: Stage TradePulse phone alerts
+on:
+  push:
+    branches: [tradepulse-phone-news]
+permissions:
+  contents: read
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_ACCOUNT_ID: "742dcd3a5234c856c900ac361f8478b0"
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: bun install --frozen-lockfile
+      - run: npm test
+      - run: node --test telegram-service/*.test.mjs
+      - run: npx tsc --noEmit
+      - run: npm run build
+      - run: test -n "$CLOUDFLARE_API_TOKEN"
+      - run: npx --yes wrangler@4 versions upload --name apex-signal-tank --preview-alias phone-news --tag phone-news --config .output/server/wrangler.json
+      - run: npx --yes wrangler@4 versions upload --tag phone-news --config index-alert-service/wrangler.jsonc
+      - run: npx --yes wrangler@4 versions upload --tag phone-news --config telegram-service/wrangler.jsonc
