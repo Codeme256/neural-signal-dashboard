@@ -33,7 +33,7 @@ export function NewsSignalCard({event,symbol,scan,busy,error,automatic,stage}:{
       <div>
        <p className="text-xs font-bold tracking-[0.15em] text-muted-foreground">{automatic?"AUTOMATIC PRE-NEWS ALERT":"APEX PRE-NEWS SCAN"}</p>
        <h3 className={"mt-1 text-2xl font-black tracking-tight "+tone}>{busy?"SCANNING…":error?"DATA UNAVAILABLE":directionLabel(bias)}</h3>
-       <p className="font-semibold">{symbol} · {event?.currency??"NEWS"} PRE-RELEASE</p>
+       <p className="font-semibold">{symbol} · {event?.currency??"NEWS"} {mins !== null && mins <= 0 ? "POST-RELEASE" : "PRE-RELEASE"}</p>
       </div>
      </div>
      <div className="rounded-lg border border-border/60 bg-background/70 px-3 py-2 text-right">

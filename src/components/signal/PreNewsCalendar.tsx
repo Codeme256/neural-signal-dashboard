@@ -140,7 +140,7 @@ export function PreNewsCalendar(){
     fetchCandles(targetMarket.derivSymbol, "H1").catch(() => []),
     fetchCandles(targetMarket.derivSymbol, "M5").catch(() => []),
     derivRequest({ticks_history:targetMarket.derivSymbol,count:2,end:"latest",style:"ticks"})
-      .then(result => parseDerivQuote(targetMarket, result.history, Date.now())).catch(() => undefined),
+      .then(result => parseDerivQuote(targetMarket, result["history"], Date.now())).catch(() => undefined),
    ]);
    const snapshot=Date.now();
    const technical=deriveSignal(candles.map(c=>({time:c.time,value:c.close})),snapshot,targetMarket.open);
