@@ -13,15 +13,20 @@ export type PairStrategyReview={
  olderR:number|null;newerR:number|null;averageR:number|null;
  verdict:PairStrategyVerdict;message:string;
 };
-const valid=(s:TrackedSignal)=>s.closedAt!==null&&(s.status==="LOST"||s.status==="WON")&&
+type StrategyOutcome = Pick<TrackedSignal, "id"|"symbol"|"strategy"|"signalTime"|"closedAt"|"status"|"entry"|"stopLoss"|"takeProfit1">;
+
+export const blockedStrategies = (reviews: PairStrategyReview[], symbol: string) =>
+ reviews.filter(review => review.symbol === symbol && review.verdict === "AVOID").map(review => review.strategy);
+
+const valid=(s:StrategyOutcome)=>s.closedAt!==null&&(s.status==="LOST"||s.status==="WON")&&
  Number.isFinite(s.entry)&&Number.isFinite(s.stopLoss)&&Number.isFinite(s.takeProfit1)&&
  Math.abs(s.entry-s.stopLoss)>0;
-const rr=(s:TrackedSignal)=>{
+const rr=(s:StrategyOutcome)=>{
  const risk=Math.abs(s.entry-s.stopLoss);
  return s.status==="LOST"?-1:Math.abs(s.takeProfit1-s.entry)/risk;
 };
-const mean=(a:TrackedSignal[])=>a.length?a.reduce((sum,s)=>sum+rr(s),0)/a.length:null;
-function review(symbol:string,strategy:string,items:TrackedSignal[]):PairStrategyReview {
+const mean=(a:StrategyOutcome[])=>a.length?a.reduce((sum,s)=>sum+rr(s),0)/a.length:null;
+function review(symbol:string,strategy:string,items:StrategyOutcome[]):PairStrategyReview {
  const resolved=items.filter(valid).sort((a,b)=>a.signalTime-b.signalTime||a.id.localeCompare(b.id));
  const half=Math.floor(resolved.length/2);
  const olderR=mean(resolved.slice(0,half)),newerR=mean(resolved.slice(half));
@@ -37,8 +42,8 @@ function review(symbol:string,strategy:string,items:TrackedSignal[]):PairStrateg
  return {symbol,strategy,total:resolved.length,wins:resolved.filter(s=>s.status==="WON").length,
   losses:resolved.filter(s=>s.status==="LOST").length,olderR,newerR,averageR,verdict,message};
 }
-export function pairStrategyReviews(signals:TrackedSignal[]):PairStrategyReview[]{
- const groups=new Map<string,{symbol:string;strategy:string;signals:TrackedSignal[]}>();
+export function pairStrategyReviews(signals:StrategyOutcome[]):PairStrategyReview[]{
+ const groups=new Map<string,{symbol:string;strategy:string;signals:StrategyOutcome[]}>();
  for(const s of signals){
   const strategy=s.strategy?.trim()||"Unknown strategy";
   const key=JSON.stringify([s.symbol,strategy]);

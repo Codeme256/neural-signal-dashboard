@@ -4,6 +4,7 @@
  * Deploy independently of the existing website and Telegram Workers.
  */
 import { parseDerivMarkets, parseDerivOhlc } from "../src/lib/deriv-data";
+import { blockedStrategies, pairStrategyReviews } from "../src/lib/pair-strategy-policy";
 import { analyze } from "../src/lib/signal-engine";
 import { analyzeBtc, isBitcoinMarket } from "../src/lib/btc-signal-engine";
 import { analyzeIndex } from "../src/lib/index-signal-engine";
@@ -279,6 +280,16 @@ async function monitorPullbacks(env:Env) {
 
 async function scheduledScan(env: Env, scheduledTime: number) {
   if (!env.TRADEPULSE_DB) throw Error("Required index alert database binding is missing");
+  const outcomes = await env.TRADEPULSE_DB.prepare(
+    "SELECT a.id,a.symbol,a.strategy,a.candle_time,a.entry,a.stop_loss,a.tp1,o.status,o.closed_at " +
+    "FROM index_alert_outcomes o JOIN index_alerts a ON o.alert_id=a.id " +
+    "WHERE o.closed_at IS NOT NULL AND o.status IN ('WIN','LOSS') ORDER BY a.candle_time DESC LIMIT 2000"
+  ).all<{id:string;symbol:string;strategy:string;candle_time:number;entry:number;stop_loss:number;tp1:number;status:"WIN"|"LOSS";closed_at:number}>();
+  const reviews = pairStrategyReviews((outcomes.results ?? []).map(row => ({
+    id:row.id, symbol:row.symbol, strategy:row.strategy.replace(/ · Confirmed pullback$/, ""),
+    signalTime:row.candle_time, entry:row.entry, stopLoss:row.stop_loss, takeProfit1:row.tp1,
+    status:row.status==="WIN" ? "WON" : "LOST", closedAt:row.closed_at,
+  })));
   const ws = await connect();
   let scanned=0,stored=0,deliveryFailures=0,watchSent=0,staleSuppressed=0;
   const request=makeRequester(ws);
@@ -297,7 +308,7 @@ async function scheduledScan(env: Env, scheduledTime: number) {
           history(m.derivSymbol, HIGHER as Timeframe),
         ]);
         const now = Date.now();
-        const input = { candles, higher, timeframe: TF, open: true, decimals: m.decimals, now, minRR: 2 };
+        const input = { candles, higher, timeframe: TF, open: true, decimals: m.decimals, now, minRR: 2, excludedStrategies: blockedStrategies(reviews, m.symbol) };
         let result;
         if (isBitcoinMarket(m.derivSymbol, m.category)) {
           result = analyzeBtc(input);

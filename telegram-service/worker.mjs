@@ -1,3 +1,4 @@
+import { handleNewsPush, sendScheduledNewsPush } from "./news-push.mjs";
 import { fetchEconomicCalendar, formatEventReminder } from "./news-calendar.mjs";
 import { renderSignalBanner } from "./signal-banners.mjs";
 /** Independent TradePulse Telegram notification Worker.
@@ -554,6 +555,9 @@ async function scanUpcomingNews(env) {
   console.warn("Pre-news calendar stale; no alerts sent",calendar.updatedAt);
   return;
  }
+ const phone = sendScheduledNewsPush(env.TRADEPULSE_DB, calendar.events, now)
+  .then(result=>console.log("Phone news push",result))
+  .catch(()=>console.warn("Phone news push unavailable"));
  await ensureNewsTable(env);
  const overview=await sendDailyNewsOverview(env,calendar,now);
  let matched=0,sent=0,failed=0;
@@ -566,6 +570,7 @@ async function scanUpcomingNews(env) {
   const result=await sendNewsReminder(env,event,stage,stage==="T60"?60:15);
   sent+=result.sent;failed+=result.failed;
  }
+ await phone;
  const todayStart=Date.parse(new Date(now+3*3600000).toISOString().slice(0,10)+"T00:00:00+03:00");
  const todayEnd=todayStart+86400000;
  const todayHigh=calendar.events.filter(e=>Date.parse(e.scheduledAt)>=todayStart&&Date.parse(e.scheduledAt)<todayEnd).length;
@@ -578,6 +583,7 @@ async function scanUpcomingNews(env) {
 export default {
  async fetch(request,env) {
   const url=new URL(request.url);
+  if(url.pathname==="/news/push") return handleNewsPush(request, env);
   if(url.pathname==="/news/calendar") {
    if(request.method!=="GET")return respond({error:"Method not allowed"},405);
    const headers={...HEADER,"Access-Control-Allow-Origin":"*","Vary":"Origin","Cache-Control":"public, max-age=300, s-maxage=300"};

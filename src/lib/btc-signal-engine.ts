@@ -26,6 +26,7 @@ export const isBitcoinMarket = (derivSymbol:string,category:string) =>
 export type BtcInput = {
  candles:Ohlc[];higher?:Ohlc[]|null;timeframe:Timeframe;now:number;open:boolean;
  decimals:number;strategy?:BtcStrategySelection;enabled?:BtcStrategyId[];
+ excludedStrategies?: readonly string[];
  minRR?:number;
 };
 type Candidate={id:BtcStrategyId;dir:Dir;stop:number;reason:string;zone?:[number,number]};
@@ -38,7 +39,7 @@ export function analyzeBtc(input:BtcInput):Analysis {
  const c=closedCandles(input.candles,tf,now),n=c.length;
  const candleTime=n?c[n-1]!.time+TF_SECONDS[tf]*1000:null;
  const selected=input.strategy&&input.strategy!=="all"?[input.strategy]:(input.enabled??BTC_DEFAULT_ENABLED);
- const strategies=BTC_STRATEGIES.filter(s=>selected.includes(s.id)&&s.timeframes.some(t=>t===tf));
+ const strategies=BTC_STRATEGIES.filter(s=>selected.includes(s.id)&&s.timeframes.some(t=>t===tf)&&!input.excludedStrategies?.includes(s.label));
  const base:Analysis={
    action:"NO TRADE",score:0,grade:"WEAK — NO TRADE",strategy:null,strategyId:null,
    timeframe:tf,higherTimeframe:htfTf,confirmTimeframe:CONFIRM_TF[tf],higherTrend:"NEUTRAL",

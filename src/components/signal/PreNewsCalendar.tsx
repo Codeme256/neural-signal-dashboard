@@ -4,6 +4,7 @@ import { AlertTriangle, BellRing, CalendarClock, RefreshCw, Search } from "lucid
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { useDerivMarkets } from "@/hooks/use-deriv";
 import { fetchCandles, fetchCandlesRange } from "@/lib/candle-store";
+import { phoneNewsPushEnabled, setPhoneNewsPush, supportsNewsPush } from "@/lib/news-push-client";
 import { deriveSignal } from "@/lib/deriv-data";
 
 type Event = {
@@ -54,7 +55,10 @@ export function PreNewsCalendar(){
  const [scannedEvent,setScannedEvent]=useState<Event|null>(null);
  const [autoEnabled,setAutoEnabled]=useState(false);
  const [deliveryStatus,setDeliveryStatus]=useState<DeliveryStatus|null>(null);
- const [browserAllowed,setBrowserAllowed]=useState(false);
+ const [phoneEnabled, setPhoneEnabled] = useState(false);
+ const [phoneSupported, setPhoneSupported] = useState(false);
+ const [phoneBusy, setPhoneBusy] = useState(false);
+ const [phoneError, setPhoneError] = useState("");
  const [autoStage,setAutoStage]=useState<string|null>(null);
  const [newsNotices,setNewsNotices]=useState<{key:string;eventId:string;symbol:string;message:string;at:number;read:boolean}[]>([]);
  const seenNotices=useRef(new Set<string>());
@@ -152,7 +156,13 @@ export function PreNewsCalendar(){
    setNewsNotices(notices);
    seenNotices.current=new Set(notices.map(v=>v.key));
   }catch{/* Storage can be blocked in private mode. */}
-  setBrowserAllowed(typeof Notification!=="undefined"&&Notification.permission==="granted");
+  setPhoneSupported(supportsNewsPush());
+  void phoneNewsPushEnabled().then(setPhoneEnabled).catch(() => {});
+  const link = new URLSearchParams(window.location.search);
+  const linkedEvent = link.get("event");
+  const linkedPair = link.get("pair");
+  if (linkedEvent) setEventId(linkedEvent);
+  if (linkedPair && DISPLAY_PAIRS.includes(linkedPair)) setSelected(linkedPair);
  },[]);
  useEffect(()=>{
   if(!autoEnabled||!calendar||calendar.stale||!calendar.events.length||!now||scanInFlight.current)return;
@@ -174,9 +184,6 @@ export function PreNewsCalendar(){
    try{localStorage.setItem("apex-news-inapp-history-v1",JSON.stringify(next));}catch{}
    return next;
   });
-  if(typeof Notification!=="undefined"&&Notification.permission==="granted"){
-   try{new Notification("APEX Pre-News · "+stage+" warning",{body:message,tag:key});}catch{}
-  }
   void runNewsScan(upcomingAlert,target,true,stage);
  // Re-evaluate only as the calendar/time changes; the in-flight ref and persisted IDs prevent duplicate alerts.
  // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -188,9 +195,17 @@ export function PreNewsCalendar(){
    return next;
   });
  };
- const allowBrowser=async()=>{
-  if(typeof Notification==="undefined")return;
-  try{setBrowserAllowed(await Notification.requestPermission()==="granted");}catch{}
+ const togglePhone = async () => {
+  setPhoneBusy(true);
+  setPhoneError("");
+  try {
+   await setPhoneNewsPush(!phoneEnabled);
+   setPhoneEnabled(!phoneEnabled);
+  } catch (error) {
+   setPhoneError(error instanceof Error ? error.message : "Could not update phone alerts.");
+  } finally {
+   setPhoneBusy(false);
+  }
  };
  const markNoticesRead=()=>{
   setNewsNotices(prev=>{
@@ -215,12 +230,13 @@ export function PreNewsCalendar(){
       className={"rounded-lg border px-3 py-2 text-xs font-bold "+(autoEnabled?"border-emerald-500/50 bg-emerald-500/10 text-emerald-500":"border-border bg-card text-muted-foreground")}>
       {autoEnabled?"🔔 AUTO PRE-NEWS ALERTS ON":"🔕 ENABLE AUTO PRE-NEWS ALERTS"}
     </button>
-    <button type="button" onClick={()=>{void allowBrowser();}} disabled={browserAllowed}
-      className="rounded-lg border border-border px-3 py-2 text-xs font-bold disabled:opacity-50">
-      {browserAllowed?"Browser notifications enabled":"Enable browser notifications"}
-    </button>
-    <span className="text-xs text-muted-foreground">In-app popup only while this page is open · Telegram reminders run separately on Cloudflare</span>
+    {phoneSupported && <button type="button" onClick={()=>{void togglePhone();}} disabled={phoneBusy}
+      aria-pressed={phoneEnabled} className="rounded-lg border border-border px-3 py-2 text-xs font-bold disabled:opacity-50">
+      {phoneBusy ? "Updating phone alerts…" : phoneEnabled ? "Disable phone alerts" : "Enable phone alerts"}
+    </button>}
+    <span className="text-xs text-muted-foreground">Phone alerts and Telegram run with the site closed. In-app popups require this page to be open.</span>
    </div>
+   {phoneError && <p role="alert" className="mt-2 text-xs text-amber-400">{phoneError}</p>}
    <div className="mt-3 rounded-lg border border-border/70 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
     <div className="flex flex-wrap items-center gap-3">
       <span>Telegram delivery: {deliveryStatus?.ready?"configured":"not verified"}</span>

@@ -70,7 +70,7 @@ export function CurrencyStrengthRanking() {
             ))}
           </div>
           <p className="mt-3 font-mono text-[11px] text-muted-foreground">
-            Strongest {data.ranked[0].currency} / Weakest {data.ranked.at(-1)?.currency}. Relative ranking only — not an entry signal or confirmed BOS.
+            Strongest {data.ranked[0]?.currency} / Weakest {data.ranked.at(-1)?.currency}. Relative ranking only — not an entry signal or confirmed BOS.
           </p>
         </>
       )}

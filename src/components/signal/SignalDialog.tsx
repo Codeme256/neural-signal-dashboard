@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { Link } from "@tanstack/react-router";
 import { signalId } from "@/lib/signal-tracker";
 import { trackerStore } from "@/lib/tracker-store";
-import { pairStrategyReviews, verdictFor, alternativesFor, type PairStrategyReview } from "@/lib/pair-strategy-policy";
+import { pairStrategyReviews, blockedStrategies, verdictFor, alternativesFor, type PairStrategyReview } from "@/lib/pair-strategy-policy";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -27,16 +27,16 @@ const lastChoice: { tf: Timeframe; strategy: StrategyFilter } = { tf: "H1", stra
 const readBtcEnabled = (): BtcStrategyId[] => { try { const data=JSON.parse(localStorage.getItem("tradepulse-btc-enabled-v1")??"null"); return Array.isArray(data)?BTC_STRATEGIES.filter(s=>data.includes(s.id)).map(s=>s.id):BTC_DEFAULT_ENABLED; }catch{return BTC_DEFAULT_ENABLED;} };
 const readEnabled = (): IndexStrategyId[] => { try { const v = JSON.parse(localStorage.getItem("tradepulse-index-enabled-v1") || "null"); return Array.isArray(v) ? INDEX_STRATEGIES.filter(s => v.includes(s.id)).map(s => s.id) : INDEX_DEFAULT_ENABLED; } catch { return INDEX_DEFAULT_ENABLED; } };
 
-async function analyseMarket(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], breakoutThreshold: number, btcStrategy:BtcStrategySelection, btcEnabled:BtcStrategyId[], signal: AbortSignal): Promise<Result> {
+async function analyseMarket(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], breakoutThreshold: number, btcStrategy:BtcStrategySelection, btcEnabled:BtcStrategyId[], excludedStrategies: readonly string[], signal: AbortSignal): Promise<Result> {
   try {
-    return await analyseMarketUnsafe(m, tf, strategy, indexStrategy, enabled, breakoutThreshold, btcStrategy, btcEnabled, signal);
+    return await analyseMarketUnsafe(m, tf, strategy, indexStrategy, enabled, breakoutThreshold, btcStrategy, btcEnabled, excludedStrategies, signal);
   } catch (e) {
     if (isAbortError(e)) throw e;
     return { market: m, analysis: null, error: "Analysis failed for this market." };
   }
 }
 
-async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], breakoutThreshold: number, btcStrategy:BtcStrategySelection, btcEnabled:BtcStrategyId[], signal: AbortSignal): Promise<Result> {
+async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: StrategyFilter, indexStrategy: IndexStrategySelection, enabled: IndexStrategyId[], breakoutThreshold: number, btcStrategy:BtcStrategySelection, btcEnabled:BtcStrategyId[], excludedStrategies: readonly string[], signal: AbortSignal): Promise<Result> {
   let candles;
   try {
     candles = await fetchCandles(m.derivSymbol, tf, signal);
@@ -46,12 +46,12 @@ async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: Stra
     return { market: m, analysis: null, error: unsupported ? `Deriv does not provide ${tf} candles for ${m.symbol}.` : "Live data unavailable for this market right now." };
   }
   const higher = await fetchCandles(m.derivSymbol, HIGHER_TF[tf], signal).catch((e) => { if (isAbortError(e)) throw e; return null; });
-  const input = { candles, higher, timeframe: tf, open: m.open, decimals: m.decimals, strategy };
+  const input = { candles, higher, timeframe: tf, open: m.open, decimals: m.decimals, strategy, excludedStrategies };
   const btc = isBitcoinMarket(m.derivSymbol,m.category);
   let analysis = btc
-    ? analyzeBtc({ candles, higher, timeframe: tf, open: m.open, decimals: m.decimals, strategy: btcStrategy, enabled: btcEnabled, now: Date.now() })
+    ? analyzeBtc({ candles, higher, timeframe: tf, open: m.open, decimals: m.decimals, excludedStrategies, strategy: btcStrategy, enabled: btcEnabled, now: Date.now() })
     : m.category === "INDEX"
-      ? analyzeIndex({ candles, higher, timeframe: tf, open: m.open, decimals: m.decimals, strategy: indexStrategy, enabled, breakoutAtrThreshold: breakoutThreshold, now: Date.now() })
+      ? analyzeIndex({ candles, higher, timeframe: tf, open: m.open, decimals: m.decimals, excludedStrategies, strategy: indexStrategy, enabled, breakoutAtrThreshold: breakoutThreshold, now: Date.now() })
       : analyze({ ...input, now: Date.now() });
   // Only fetch the lower confirmation timeframe when there is a setup worth confirming.
   if (!btc && m.category !== "INDEX" && CONFIRM_TF[tf] !== tf && analysis.entry !== null) {
@@ -91,11 +91,12 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
       const track = (found: number) => window.__lovableEvents?.track?.("project.market_scan_completed", { section, pairs_scanned: targets.length, signals_found: found, has_results: found > 0, timeframe: tf });
       if (!targets.length) { setDone(true); track(0); return; }
       const found: Result[] = [];
+      const evidence = pairStrategyReviews(trackerStore.get());
       try {
         for (let i = 0; i < targets.length; i += BATCH) {
           const batch = targets.slice(i, i + BATCH);
           setCurrent(batch.map((m) => m.symbol).join(" · "));
-          found.push(...(await Promise.all(batch.map((m) => analyseMarket(m, tf, strategy, indexStrategy, indexEnabled, breakoutThreshold, btcStrategy, btcEnabled, ctrl.signal)))));
+          found.push(...(await Promise.all(batch.map((m) => analyseMarket(m, tf, strategy, indexStrategy, indexEnabled, breakoutThreshold, btcStrategy, btcEnabled, blockedStrategies(evidence, m.symbol), ctrl.signal)))));
           setProgress(Math.round(((i + batch.length) / targets.length) * 100));
           await new Promise((r) => setTimeout(r, 0)); // keep the UI responsive between batches
         }
@@ -109,7 +110,7 @@ export function ScanDialog({ open, markets, prices: _prices, onClose, label = "a
       setResults(found);
       setDone(true);
       void storeScanSession(found.map(r => ({ symbol: r.market.symbol, derivSymbol: r.market.derivSymbol, category: r.market.category, timeframe: tf, strategy: r.analysis?.strategy ?? (r.market.category === "INDEX" ? indexStrategy : strategy), action: r.analysis?.action ?? "UNAVAILABLE", at: Date.now(), candleTime: r.analysis?.lastCandleTime ?? null, entry: r.analysis?.entry ?? null, stopLoss: r.analysis?.stopLoss ?? null, tp1: r.analysis?.takeProfit1 ?? null, tp2: r.analysis?.takeProfit2 ?? null, error: r.error ?? r.analysis?.reasons.join("; ") ?? null, indicatorSnapshot: r.analysis?.checks ?? [], marketRegime: r.analysis?.marketRegime ?? null, dataStatus: r.error ? "UNAVAILABLE" as const : r.analysis?.reasons.some(x=>/stale/i.test(x)) ? "STALE" as const : r.analysis?.marketOpen ? "FRESH" as const : "CLOSED" as const }))).catch(console.error);
-      for (const r of found) if ((r.market.category === "INDEX" || isBitcoinMarket(r.market.derivSymbol,r.market.category)) && r.analysis && (r.analysis.action === "BUY" || r.analysis.action === "SELL")) {
+      for (const r of found) if (r.analysis && (r.analysis.action === "BUY" || r.analysis.action === "SELL")) {
         const a = r.analysis;
         if (a.lastCandleTime != null && a.entry != null && a.stopLoss != null && a.takeProfit1 != null && a.takeProfit2 != null) {
           const id = signalId(r.market.derivSymbol, tf, a.lastCandleTime, a.action);

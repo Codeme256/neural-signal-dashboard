@@ -23,6 +23,7 @@ const rrMin = 2;
 export type IndexInput = {
   candles: Ohlc[]; higher?: Ohlc[] | null; timeframe: Timeframe; now: number; open: boolean;
   decimals: number; strategy?: IndexStrategySelection; enabled?: IndexStrategyId[];
+  excludedStrategies?: readonly string[];
   minRR?: number; breakoutAtrThreshold?: number;
   /** Hypothetical cost/slippage stress expressed as fraction of ATR; not a live spread quote. */
   frictionAtrFraction?: number;
@@ -123,7 +124,7 @@ function evaluate(id: IndexStrategyId, c: Ohlc[], atr: number, adx: number | nul
 
 export function analyzeIndex(input:IndexInput):Analysis{
  const tf=input.timeframe,now=input.now,htf=HIGHER_TF[tf],closed=closedCandles(input.candles,tf,now);
- const selected=input.strategy==="all"||!input.strategy?(input.enabled??INDEX_DEFAULT_ENABLED):[input.strategy];
+ const selected=(input.strategy==="all"||!input.strategy?(input.enabled??INDEX_DEFAULT_ENABLED):[input.strategy]).filter(id=>!input.excludedStrategies?.includes(INDEX_STRATEGIES.find(s=>s.id===id)?.label??""));
  const ids=INDEX_STRATEGIES.filter(s=>selected.includes(s.id)&&s.timeframes.some(t=>t===tf));
  const stamp=closed.at(-1)?closed.at(-1)!.time+TF_SECONDS[tf]*1000:null;
  const base:Analysis={action:"NO TRADE",score:0,grade:"WEAK — NO TRADE",strategy:null,strategyId:null,timeframe:tf,higherTimeframe:htf,confirmTimeframe:CONFIRM_TF[tf],higherTrend:"NEUTRAL",marketOpen:input.open,lastCandleTime:stamp,expiresAt:stamp==null?null:stamp+TF_SECONDS[tf]*1000,entry:null,entryZone:null,stopLoss:null,takeProfit1:null,takeProfit2:null,riskReward:null,invalidation:null,confirmation:null,reasons:[],checks:[],breakdown:[],strategies:[]};

@@ -171,6 +171,7 @@ export type AnalyzeInput = {
   open: boolean;
   decimals: number;
   strategy?: StrategyFilter;
+  excludedStrategies?: readonly string[];
   spread?: number;
   minRR?: number;
   weights?: ScoreWeights;
@@ -184,7 +185,7 @@ export function analyze(input: AnalyzeInput): Analysis {
   const htfTf = HIGHER_TF[tf];
   const confTf = CONFIRM_TF[tf];
   const filter = input.strategy ?? "all";
-  const ids = filter === "all" ? ALL_IDS : [filter];
+  const ids = (filter === "all" ? ALL_IDS : [filter]).filter(id => !input.excludedStrategies?.includes(STRATEGY_NAMES[id]));
   const fmt = (v: number) => v.toFixed(decimals);
   const closed = closedCandles(input.candles, tf, now);
   const lastClose = closed.at(-1) ? closed.at(-1)!.time + TF_SECONDS[tf] * 1000 : null;
@@ -201,6 +202,7 @@ export function analyze(input: AnalyzeInput): Analysis {
   const reject = (reason: string, extra: Partial<Analysis> = {}): Analysis => ({ ...base, ...extra, reasons: [reason, ...(extra.reasons ?? [])] });
 
   // Hard rejections on data quality / market state.
+  if (!ids.length) return reject("The selected strategy is paused for this market based on resolved outcomes.");
   if (!input.open) return reject("Market closed — no active signal.");
   if (closed.length < MIN_CANDLES) return reject(`Insufficient history: ${closed.length} completed ${tf} candles (need ${MIN_CANDLES}).`);
   if (isStale(closed, tf, now)) return reject(`Candle data is stale — last ${tf} candle closed ${new Date(lastClose!).toUTCString()}.`);
