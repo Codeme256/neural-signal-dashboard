@@ -18,7 +18,7 @@ import { CONFIRM_TF, HIGHER_TF, STRATEGIES, TIMEFRAMES, type Analysis, type Stra
 import { NeuralCanvas } from "./NeuralCanvas";
 import { NeuralScan } from "./NeuralScan";
 
-type Result = { market: DerivMarket; analysis: Analysis | null; move?: number; error?: string };
+type Result = { market: DerivMarket; analysis: Analysis | null; move?: number; lastClose?: number; error?: string };
 const MIN_STRENGTH = 70;
 /** Pairs analysed at once; the Deriv client additionally caps simultaneous requests. */
 const BATCH = 3;
@@ -62,7 +62,7 @@ async function analyseMarketUnsafe(m: DerivMarket, tf: Timeframe, strategy: Stra
   const closed = closedCandles(candles, tf, now);
   const latest = closed.at(-1);
   return latest && !isStale(closed, tf, now) && m.open ?
-    { market: m, analysis, move: (latest.close / latest.open - 1) * 100 } : { market: m, analysis };
+    { market: m, analysis, move: (latest.close / latest.open - 1) * 100, lastClose: latest.close } : { market: m, analysis };
 }
 
 export function ScanDialog({ open, markets, quotes, onClose, label = "all open markets", section = "all", single = false }: { section?: string; open: boolean; markets: DerivMarket[]; quotes: Map<string, DerivQuote>; onClose: () => void; label?: string; single?: boolean | undefined }) {
@@ -135,14 +135,19 @@ export function ScanDialog({ open, markets, quotes, onClose, label = "all open m
   const isFxOrMetal = (r: Result) => ["FOREX", "METAL"].includes(r.market.category);
   const watch = ranked.filter(r => r.analysis!.action === "WAIT" ||
     (isFxOrMetal(r) && r.analysis!.action === "NO TRADE" && r.analysis!.score >= 40 && r.analysis!.score < MIN_STRENGTH));
-  const quoteSummary = ({ market, move }: Result) => {
+  const quoteSummary = ({ market, move, lastClose }: Result) => {
     const quote = quotes.get(market.symbol);
     const status = derivQuoteStatus(quote, Date.now());
     const price = quote ? `${formatMarketPrice(quote.price, market)} · ${status} · ${new Date(quote.epoch).toLocaleTimeString()}` : status;
-    return move === undefined ? price : `${price} · Last closed ${tf} ${move >= 0 ? "+" : ""}${move.toFixed(3)}%`;
+    const signed = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(3)}%`;
+    const live = status === "LIVE" && quote && lastClose !== undefined
+      ? ` · Since last close ${signed((quote.price / lastClose - 1) * 100)}` : "";
+    return `${price} · Last closed ${tf} ${move === undefined ? "unavailable" : signed(move)}${live}`;
   };
   const unavailable = results.filter((r) => r.error);
-  const noTrade = results.filter((r) => r.analysis?.action === "NO TRADE");
+  const strongSymbols = new Set(strong.map(r => r.market.derivSymbol));
+  const remaining = results.filter(r => !strongSymbols.has(r.market.derivSymbol));
+  const watchSymbols = new Set(watch.map(r => r.market.derivSymbol));
   const closed = results.filter(r => !r.market.open);
   const totalIndex = onlyIndex ? markets.length : 0;
   const one = single ? results[0] : undefined;
@@ -243,7 +248,10 @@ export function ScanDialog({ open, markets, quotes, onClose, label = "all open m
                 <p className="mt-2">{verdictFor(reviews,one.market.symbol,one.analysis.strategy)?.message}</p>
                </div>}
               <SignalCard quote={quoteSummary(one)} market={one.market} analysis={one.analysis} detailed blocked={verdictFor(reviews,one.market.symbol,one.analysis.strategy)?.verdict==="AVOID"}/>
-            </div> : <p className="py-8 text-center text-muted-foreground">{one?.error ?? "No data for this market."}</p>
+            </div> : <div className="space-y-2 text-sm text-muted-foreground">
+              {one && <p>{one.market.symbol} · {quoteSummary(one)}</p>}
+              <p>{one?.error ?? "No data for this market."}</p>
+            </div>
           )}
 
           {done && !single && (
@@ -260,38 +268,25 @@ export function ScanDialog({ open, markets, quotes, onClose, label = "all open m
                   <p className="mt-1">Stock indices normally close on weekends. Last completed candles, if available, are for reference only; no live BUY or SELL signals are issued while the market is closed.</p>
                 </div>
               )}
-              {strong.length === 0 && !onlyIndex && <p className="py-6 text-center text-muted-foreground">No strong signals on {tf} right now. The engine only signals confirmed setups — try another timeframe or scan again later.</p>}
-              {strong.length === 0 && onlyIndex && markets.some(m=>m.open) && <p className="py-2 text-center text-muted-foreground">No fully confirmed index signals on {tf}. See NO TRADE / WAIT results below for the specific reason.</p>}
+              {strong.length === 0 && results.length === 0 && <p className="text-sm text-muted-foreground">No open markets returned for this scan.</p>}
               {strong.map((r) => <SignalCard key={r.market.derivSymbol} market={r.market} quote={quoteSummary(r)} analysis={r.analysis!} />)}
-              {onlyIndex && [...noTrade,...results.filter(r=>r.analysis?.action==="WAIT")].map(r=>(
-                <div key={r.market.derivSymbol} className="rounded-lg border border-border bg-background/40 p-3 font-mono text-xs">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-display text-base font-semibold">{r.market.name}</span>
-                    <span className="text-warn">{r.analysis?.action} · {r.market.open?"OPEN":"CLOSED"}</span>
-                  </div>
-                  <p className="mt-1 text-muted-foreground">{r.analysis?.reasons.join(" · ") || "No confirmed setup"}</p>
-                  {r.analysis?.lastCandleTime && <p className="mt-1 text-muted-foreground">Last completed candle: {new Date(r.analysis.lastCandleTime).toLocaleString()}</p>}
-                </div>
-              ))}
-              {onlyIndex && unavailable.map(r=>(
-                <div key={r.market.derivSymbol} className="rounded-lg border border-border bg-background/40 p-3 font-mono text-xs">
-                  <strong>{r.market.name}</strong><p className="mt-1 text-muted-foreground">DATA UNAVAILABLE · {r.error}</p>
-                </div>
-              ))}
-              {watch.length > 0 && (
-                <div className="pt-2">
-                  <div className="mb-2 font-mono text-[10px] tracking-widest text-muted-foreground">WATCHLIST · FOREX/METALS FROM 40/100</div>
-                  <div className="space-y-1.5">
-                    {watch.map((r) => (
-                      <div key={r.market.derivSymbol} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background/40 px-3 py-2 font-mono text-xs">
-                        <span className="font-display text-sm font-bold">{r.market.symbol}</span>
-                        <span className="text-muted-foreground">{r.analysis!.strategy} · {quoteSummary(r)}</span>
-                        <span className="text-warn">{r.analysis!.score}/100</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {remaining.length > 0 && <section aria-label="Market movement" className="space-y-2">
+                <h3 className="font-mono text-xs font-bold uppercase tracking-wider">Market movement · {tf}</h3>
+                {remaining.map(r => {
+                  const a = r.analysis;
+                  const isWatch = watchSymbols.has(r.market.derivSymbol);
+                  const status = !r.market.open ? "CLOSED" : r.error ? "DATA UNAVAILABLE" : isWatch ? "WATCH" : "NO TRADE";
+                  return <article key={r.market.derivSymbol} className="rounded-lg border border-border bg-background/40 p-3 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <strong className="font-display text-base">{r.market.symbol}</strong>
+                      <span className="font-mono text-warn">{status}{a ? ` · ${a.score}/100` : ""}</span>
+                    </div>
+                    <p className="mt-1 font-mono text-foreground">{quoteSummary(r)}</p>
+                    {(r.error || a?.reasons[0]) && <p className="mt-1 text-muted-foreground">{r.error ?? a?.reasons[0]}</p>}
+                    {isWatch && a?.strategy && <p className="mt-1 text-muted-foreground">{a.strategy}</p>}
+                  </article>;
+                })}
+              </section>}
               <p className="text-[11px] text-muted-foreground">
                 {onlyIndex ? `Checked ${results.length}/${totalIndex} index markets · ${closed.length} closed · ${unavailable.length} data unavailable` : `Scanned ${results.length} open market${results.length === 1 ? "" : "s"}${unavailable.length ? ` · ${unavailable.length} unavailable` : ""}`}. Scores are confluence points, not win probabilities. Technical indication from live Deriv data — not financial advice.
               </p>
