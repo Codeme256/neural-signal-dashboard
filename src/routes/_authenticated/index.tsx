@@ -6,6 +6,10 @@ import { NeuralCanvas } from "@/components/signal/NeuralCanvas";
 import { ScanDialog } from "@/components/signal/SignalDialog";
 import { UserMenu } from "@/components/auth/UserMenu";
 import { IndexNotificationCenter } from "@/components/signal/IndexNotificationCenter";
+import { useQuery } from "@tanstack/react-query";
+import { fetchCandles } from "@/lib/candle-store";
+import { deriveSignal } from "@/lib/deriv-data";
+import { MonthlyMarketTrend } from "@/components/signal/MonthlyMarketTrend";
 import { CurrencyStrengthRanking } from "@/components/signal/CurrencyStrengthRanking";
 
 export const Route = createFileRoute("/_authenticated/")({
@@ -36,6 +40,24 @@ function Dashboard() {
   const marketsQ = useDerivMarkets();
   const markets = marketsQ.data ?? [];
   const quotesQ = useDerivQuotes(markets);
+  const marketStrength = useQuery({
+    queryKey: ["market-hourly-strength", markets.map((market) => [market.derivSymbol, market.open])],
+    enabled: !!markets.length,
+    staleTime: 300_000,
+    refetchInterval: 300_000,
+    queryFn: async ({ signal }) => {
+      const results = await Promise.all(markets.map(async (market) => {
+        try {
+          const candles = await fetchCandles(market.derivSymbol, "H1", signal);
+          return [market.derivSymbol, deriveSignal(candles.map(({ time, close }) => ({ time, value: close })), Date.now(), market.open)] as const;
+        } catch (error) {
+          if (signal.aborted) throw error;
+          return [market.derivSymbol, null] as const;
+        }
+      }));
+      return new Map(results);
+    },
+  });
   const quotes = useMemo(() => new Map((quotesQ.data ?? []).map((q) => [q.symbol, q])), [quotesQ.data]);
   const [cat, setCat] = useState("ALL");
   const [query, setQuery] = useState("");
@@ -89,6 +111,8 @@ function Dashboard() {
           </button>
         </section>
 
+        <MonthlyMarketTrend markets={markets} />
+
         <CurrencyStrengthRanking />
 
         <section className="mt-10 grid grid-cols-2 gap-4 lg:grid-cols-5">
@@ -138,6 +162,9 @@ function Dashboard() {
 
         <section className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {list.map((m) => {
+            const strength = marketStrength.data?.get(m.derivSymbol);
+            const direction = strength?.actionable ? strength.direction : "WAIT";
+            const tone = direction === "BULLISH" ? "text-emerald-400" : direction === "BEARISH" ? "text-rose-400" : "text-muted-foreground";
             const q = quotes.get(m.symbol);
             const status = derivQuoteStatus(q, now);
             return (
@@ -150,6 +177,11 @@ function Dashboard() {
                   <span className={`status status-${status.toLowerCase()}`}>{status}</span>
                 </div>
                 <div className="mt-4 font-mono text-2xl font-semibold">{q ? formatMarketPrice(q.price, m) : "—"}</div>
+                <p className={`mt-2 font-mono text-xs ${tone}`}>
+                  H1 strength · {strength?.change == null
+                    ? (marketStrength.isPending ? "Loading…" : "Unavailable")
+                    : `${direction} · ${strength.change >= 0 ? "+" : ""}${strength.change.toFixed(2)}% over 24 H1 bars`}
+                </p>
                 <div className="mt-1 flex items-center justify-between">
                   <span className="font-mono text-[10px] tracking-widest text-muted-foreground">{m.category}</span>
                   <button
